@@ -36,7 +36,7 @@ Issues = "https://github.com/LanGuo/verichart/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0.0", "hatch>=1.12.0"]
-# clinical = ["medspacy>=1.0", "spacy>=3.7"]   # Phase 2
+clinical = ["medspacy>=1.3,<2", "gliner>=0.2.13"]
 # omop = [...]                                  # Phase 7
 # fhir = ["fhir.resources>=7.0"]                # Phase 7
 
@@ -48,4 +48,7 @@ packages = ["verichart"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--tb=short"
+addopts = "--tb=short -m 'not clinical'"
+markers = [
+    "clinical: needs the verichart[clinical] extra (medspacy / gliner). Deselected by default; run with -m clinical.",
+]

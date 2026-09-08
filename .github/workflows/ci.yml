@@ -19,4 +19,16 @@ jobs:
       # veritract is not on PyPI yet — install it from source.
       - run: pip install "veritract @ git+https://github.com/LanGuo/veritract.git@main"
       - run: pip install -e '.[dev]'
-      - run: pytest -q
+      - run: pytest -q          # base suite (clinical tests deselected via pyproject addopts)
+
+  clinical:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "veritract @ git+https://github.com/LanGuo/veritract.git@main"
+      - run: pip install -e '.[dev,clinical]'
+      # Adapter tests that need a model download skip themselves when it is not cached.
+      - run: pytest -q -m clinical
