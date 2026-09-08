@@ -238,6 +238,23 @@ def test_to_facts_identical_fact_gets_same_id_across_results():
     assert id1["drug"] != id2["drug"]                # changed value -> different id
 
 
+def test_to_facts_skips_empty_value_fields():
+    """veritract can promote an empty-string field to 'inferred'; it is not a fact."""
+    from veritract import ExtractionResult, GroundedField
+
+    from verichart import to_facts
+
+    result = ExtractionResult(
+        extracted={
+            "real": GroundedField(value="metformin", span=None, confidence=80.0),
+            "blank": GroundedField(value="   ", span=None, confidence=80.0),
+        },
+        quarantined=[],
+    )
+    labels = {f["label"] for f in to_facts(result)}
+    assert labels == {"real"}
+
+
 def test_public_api():
     from verichart import ClinicalFact, compute_fact_id, to_facts
 

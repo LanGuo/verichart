@@ -159,6 +159,8 @@ def to_facts(
     facts: list[ClinicalFact] = []
 
     for label, gf in result.extracted.items():
+        if not gf["value"].strip():
+            continue  # a fact with no value is not a fact
         span = gf["span"]
         provenance_type: ProvenanceType = span["provenance_type"] if span else "inferred"
         facts.append(_fact(
@@ -177,6 +179,8 @@ def to_facts(
         ))
 
     for qf in result.quarantined:
+        if not qf["value"].strip():
+            continue
         facts.append(_fact(
             label=qf["field_name"],
             value=qf["value"],
