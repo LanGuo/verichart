@@ -1,24 +1,48 @@
 """verichart.clinical — open-ended clinical entity extraction (Phase 2).
 
-Public surface is wired up as tasks land. Adapters that need the ``verichart[clinical]``
-extra (medspaCy / GLiNER) are imported lazily so ``import verichart.clinical`` works
-without the extra installed.
+``recognize -> classify -> ground -> project`` to ``ClinicalFact``:
+
+    from verichart.clinical import GlinerBiomedRecognizer, MedspacyContextClassifier
+    from verichart.clinical import extract_entities, DEFAULT_GLINER_LABELS
+
+    rec = GlinerBiomedRecognizer()                 # needs verichart[clinical]
+    clf = MedspacyContextClassifier()
+    facts = extract_entities(note_text, recognizer=rec,
+                             labels=list(DEFAULT_GLINER_LABELS.values()),
+                             assertion_classifier=clf, doc_id="note:1")
+
+Adapter classes import their backend (medspaCy / gliner) lazily on construction, so
+this module imports fine without the extra installed.
 """
 
+from verichart.clinical.assertion import MedspacyContextClassifier, derive_assertion_status
 from verichart.clinical.entities import (
+    CANONICAL_LABELS,
+    DEFAULT_GLINER_LABELS,
     AssertionClassifier,
     AssertionResult,
     EntityMention,
     EntityRecognizer,
     MockAssertionClassifier,
     MockRecognizer,
+    extract_entities,
+    normalize_label,
 )
+from verichart.clinical.ner import GlinerBiomedRecognizer, MedspacyRuleRecognizer
 
 __all__ = [
+    "extract_entities",
+    "derive_assertion_status",
     "EntityMention",
     "AssertionResult",
     "EntityRecognizer",
     "AssertionClassifier",
     "MockRecognizer",
     "MockAssertionClassifier",
+    "GlinerBiomedRecognizer",
+    "MedspacyRuleRecognizer",
+    "MedspacyContextClassifier",
+    "CANONICAL_LABELS",
+    "DEFAULT_GLINER_LABELS",
+    "normalize_label",
 ]

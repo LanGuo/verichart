@@ -213,3 +213,21 @@ def test_extract_entities_raises_on_misaligned_classifier():
 
     with pytest.raises(ValueError, match="one per mention"):
         extract_entities(TEXT, recognizer=_rec(), labels=["PROBLEM"], assertion_classifier=BadClf())
+
+
+def test_public_api():
+    from verichart import extract_entities as top_level
+    from verichart.clinical import (
+        DEFAULT_GLINER_LABELS,
+        GlinerBiomedRecognizer,
+        MedspacyContextClassifier,
+        MedspacyRuleRecognizer,
+        derive_assertion_status,
+    )
+
+    assert callable(top_level)
+    assert callable(derive_assertion_status)
+    # adapter classes import without their backend installed (lazy import on construction)
+    assert all(isinstance(c, type) for c in
+               (GlinerBiomedRecognizer, MedspacyRuleRecognizer, MedspacyContextClassifier))
+    assert set(DEFAULT_GLINER_LABELS) == {"PROBLEM", "MEDICATION", "LAB", "PROCEDURE", "VITAL"}

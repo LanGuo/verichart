@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "verichart"
-version = "0.1.0"
+version = "0.2.0"
 requires-python = ">=3.10"
 description = "Audit-grade clinical facts with fact-level provenance — the open Silver + Reasoning tier for real-world evidence"
 license = { text = "MIT" }

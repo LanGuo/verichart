@@ -6,6 +6,7 @@ document, exact span, extraction model + config version, confidence, and
 (from Phase 5) detected conflicts and their resolution.
 """
 
-from verichart.facts import ClinicalFact, compute_fact_id, to_facts
+from verichart.clinical.entities import extract_entities
+from verichart.facts import ClinicalFact, compute_fact_id, make_fact, to_facts
 
-__all__ = ["ClinicalFact", "to_facts", "compute_fact_id"]
+__all__ = ["ClinicalFact", "to_facts", "extract_entities", "compute_fact_id", "make_fact"]

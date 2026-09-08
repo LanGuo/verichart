@@ -22,7 +22,7 @@ mutates are deliberately **not** in it.
 | | `value` | `GroundedField["value"]` / `QuarantinedField["value"]` | **yes** |
 | | `value_normalized` | Phase 4 / 6 (unit + format normalization) — `None` in Phase 1 | no |
 | | `effective_date` | caller-supplied in Phase 1; Phase 6 extracts from text | no |
-| | `assertion_status` | `"unknown"` in Phase 1; Phase 2 (negation / ConText) populates | no |
+| | `assertion_status` | `"unknown"` in Phase 1; Phase 2 sets it via `derive_assertion_status` from a `MedspacyContextClassifier` (ConText) — `confirmed` / `ruled_out` / `family_history` / `historical` / `hypothetical` / `uncertain` | no |
 | **Provenance** | `provenance_type` | `Span["provenance_type"]` when grounded; `"inferred"` when grounded without a locatable span; `"unverified"` when quarantined | no |
 | | `span` | `GroundedField["span"]` (a veritract `Span`) — `None` when unverified | **yes** (its `doc_id` + offsets) |
 | | `supporting_spans` | `[span]` in Phase 1; Phase 5 dedup unions spans from merged facts | no |
@@ -55,9 +55,18 @@ The [roadmap][roadmap] Phase 1 sketch of `ClinicalFact` was refined during imple
 - **`provenance_type` hoisted to the fact** with a fourth value `"unverified"`. The roadmap left
   the unverified case implicit in `span is None`, but a grounded-then-LLM-inferred fact can also
   have `span is None` — so the distinction needs its own field.
-- **`note` added** — carries the quarantine `reason` in Phase 1; general annotation slot later.
+- **`note` added** — carries the quarantine `reason` in Phase 1; the fired ConText modifiers in
+  Phase 2; general annotation slot later.
 - **`to_facts()` gained `manifest=` and `created_at=`** beyond the sketch's
   `patient_pseudonym` / `effective_date`, for model provenance and reproducible ids.
+- **`AssertionStatus` gained `"uncertain"`** (Phase 2). The article's list is *confirmed,
+  ruled-out, family history, patient-reported, historical*; ConText also produces uncertainty
+  and hypotheticality — both clinically load-bearing — so verichart keeps `"hypothetical"` and
+  adds `"uncertain"`. See [`clinical-ner.md`](clinical-ner.md).
+- **Phase 2 split `EntityRecognizer` from `AssertionClassifier`** — the roadmap sketched one
+  recognizer returning entities that already carried `assertion_status`. GLiNER-BioMed (finds
+  entities, no negation) + medspaCy ConText (classifies, doesn't find) compose better as two
+  protocols.
 
 ## Known issue for Phase 5
 
