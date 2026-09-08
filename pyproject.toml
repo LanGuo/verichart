@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "verichart"
+version = "0.1.0"
+requires-python = ">=3.10"
+description = "Audit-grade clinical facts with fact-level provenance — the open Silver + Reasoning tier for real-world evidence"
+license = { text = "MIT" }
+readme = "README.md"
+authors = [{ name = "Lan Guo" }]
+keywords = [
+    "clinical-nlp", "healthcare", "provenance", "omop", "fhir",
+    "real-world-evidence", "rwe", "llm", "extraction",
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Healthcare Industry",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+dependencies = [
+    "veritract>=0.2,<0.3",
+    "typing_extensions>=4.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/LanGuo/verichart"
+Repository = "https://github.com/LanGuo/verichart"
+Issues = "https://github.com/LanGuo/verichart/issues"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0", "hatch>=1.12.0"]
+# clinical = ["medspacy>=1.0", "spacy>=3.7"]   # Phase 2
+# omop = [...]                                  # Phase 7
+# fhir = ["fhir.resources>=7.0"]                # Phase 7
+
+[tool.hatch.build.targets.sdist]
+exclude = ["venv", "dist", "docs", ".github"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["verichart"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--tb=short"
