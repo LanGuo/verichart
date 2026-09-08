@@ -82,3 +82,34 @@ def test_mock_assertion_classifier_multiple_flags():
 def test_mock_assertion_classifier_empty_mentions():
     clf = MockAssertionClassifier()
     assert clf.classify("anything", []) == []
+
+
+# --- derive_assertion_status ---
+
+
+def _ar(**flags):
+    base = dict(is_negated=False, is_historical=False, is_hypothetical=False,
+                is_family=False, is_uncertain=False, modifiers=[])
+    base.update(flags)
+    return AssertionResult(**base)
+
+
+@pytest.mark.parametrize("flags,expected", [
+    ({}, "confirmed"),
+    ({"is_negated": True}, "ruled_out"),
+    ({"is_family": True}, "family_history"),
+    ({"is_hypothetical": True}, "hypothetical"),
+    ({"is_historical": True}, "historical"),
+    ({"is_uncertain": True}, "uncertain"),
+    ({"is_negated": True, "is_family": True}, "ruled_out"),          # negation wins
+    ({"is_family": True, "is_historical": True}, "family_history"),  # family beats historical
+    ({"is_hypothetical": True, "is_uncertain": True}, "hypothetical"),
+])
+def test_derive_assertion_status_precedence(flags, expected):
+    from verichart.clinical.assertion import derive_assertion_status
+    assert derive_assertion_status(_ar(**flags)) == expected
+
+
+def test_uncertain_is_a_valid_assertion_status():
+    from verichart.facts import AssertionStatus
+    assert "uncertain" in AssertionStatus.__args__

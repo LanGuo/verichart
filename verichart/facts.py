@@ -36,6 +36,7 @@ AssertionStatus = Literal[
     "patient_reported",
     "historical",
     "hypothetical",
+    "uncertain",
     "unknown",
 ]
 
