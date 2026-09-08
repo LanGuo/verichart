@@ -2,7 +2,8 @@
 
 The FDA's December 2025 real-world-evidence guidance treats relevance and reliability as
 *per-fact* properties. The [source article][article] frames this as six attribute categories
-that must be native fields on every clinical fact. This table maps each to a `ClinicalFact`
+that must be native fields on every clinical fact (see [`reference/README.md`](reference/README.md)
+for the citation and what verichart takes from it). This table maps each to a `ClinicalFact`
 field, says where the value comes from, and marks whether it feeds `fact_id`.
 
 `fact_id = sha256(label, value, concept_code, concept_system, span.doc_id, span.char_start,
@@ -65,5 +66,5 @@ fact for the same drug at the same span will get **different** `fact_id`s. Phase
 must therefore key on `concept_code` (available after Phase 3), not on `label`. Flagged in the
 Phase 1 plan's self-review; to be addressed in the Phase 5 plan.
 
-[article]: David Talby, "Fact-level provenance in healthcare AI: the 42 capabilities behind an FDA-ready clinical data platform" (AI in Healthcare, Sept 2026)
+[article]: https://www.talby.com/p/fact-level-provenance-in-healthcare
 [roadmap]: ../../veritract/docs/superpowers/plans/2026-09-07-clinical-rwe-package-roadmap.md
