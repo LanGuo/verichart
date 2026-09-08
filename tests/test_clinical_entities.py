@@ -113,3 +113,103 @@ def test_derive_assertion_status_precedence(flags, expected):
 def test_uncertain_is_a_valid_assertion_status():
     from verichart.facts import AssertionStatus
     assert "uncertain" in AssertionStatus.__args__
+
+
+# --- extract_entities ---
+
+TEXT = "No evidence of pneumonia. Patient has type 2 diabetes and takes metformin."
+
+
+def _rec():
+    r = MockRecognizer(version="gliner-mock@1", digest="sha256:abc")
+    r.register("pneumonia", label="PROBLEM", score=0.95)
+    r.register("type 2 diabetes", label="PROBLEM", score=0.91)
+    r.register("metformin", label="MEDICATION", score=0.88)
+    return r
+
+
+def test_extract_entities_projects_to_clinical_facts_in_doc_order():
+    from verichart.clinical.entities import extract_entities
+
+    facts = extract_entities(TEXT, recognizer=_rec(), labels=["PROBLEM", "MEDICATION"],
+                             doc_id="note:7", patient_pseudonym="pt_7")
+    assert [f["value"] for f in facts] == ["pneumonia", "type 2 diabetes", "metformin"]
+    for f in facts:
+        assert f["provenance_type"] == "direct"
+        assert f["span"]["doc_id"] == "note:7"
+        assert TEXT[f["span"]["char_start"]:f["span"]["char_end"]] == f["value"]
+        assert f["extraction_model"] == "gliner-mock@1"
+        assert f["extraction_model_digest"] == "sha256:abc"
+        assert f["patient_pseudonym"] == "pt_7"
+        assert f["concept_code"] is None
+        assert 0.0 <= f["extraction_confidence"] <= 1.0
+
+
+def test_extract_entities_without_classifier_status_is_unknown():
+    from verichart.clinical.entities import extract_entities
+
+    facts = extract_entities(TEXT, recognizer=_rec(), labels=["PROBLEM", "MEDICATION"])
+    assert all(f["assertion_status"] == "unknown" for f in facts)
+
+
+def test_extract_entities_with_classifier_sets_status():
+    from verichart.clinical.entities import extract_entities
+
+    clf = MockAssertionClassifier()
+    clf.register("No evidence of", is_negated=True)  # clause governs pneumonia
+    facts = extract_entities(TEXT, recognizer=_rec(), labels=["PROBLEM", "MEDICATION"],
+                             assertion_classifier=clf)
+    by_value = {f["value"]: f for f in facts}
+    assert by_value["pneumonia"]["assertion_status"] == "ruled_out"
+    assert by_value["type 2 diabetes"]["assertion_status"] == "confirmed"
+    assert by_value["metformin"]["assertion_status"] == "confirmed"
+    assert "No evidence of" in by_value["pneumonia"]["note"]
+
+
+def test_extract_entities_min_score_filters():
+    from verichart.clinical.entities import extract_entities
+
+    facts = extract_entities(TEXT, recognizer=_rec(), labels=["PROBLEM", "MEDICATION"],
+                             min_score=0.9)
+    assert {f["value"] for f in facts} == {"pneumonia", "type 2 diabetes"}
+
+
+def test_extract_entities_drops_mention_with_bad_offsets():
+    from verichart.clinical.entities import extract_entities
+
+    r = MockRecognizer()
+    r.register_raw(text="ghost", char_start=1000, char_end=1005, label="PROBLEM", score=1.0)
+    with pytest.warns(UserWarning, match="offset"):
+        facts = extract_entities("short text", recognizer=r, labels=["PROBLEM"])
+    assert facts == []
+
+
+def test_extract_entities_fact_id_deterministic():
+    from verichart.clinical.entities import extract_entities
+
+    a = extract_entities(TEXT, recognizer=_rec(), labels=["PROBLEM", "MEDICATION"],
+                         created_at="2026-01-01T00:00:00+00:00")
+    b = extract_entities(TEXT, recognizer=_rec(), labels=["PROBLEM", "MEDICATION"],
+                         created_at="2026-09-01T00:00:00+00:00")
+    assert [f["fact_id"] for f in a] == [f["fact_id"] for f in b]
+
+
+def test_extract_entities_manifest_id_stamped():
+    from verichart.clinical.entities import extract_entities
+
+    facts = extract_entities(TEXT, recognizer=_rec(), labels=["PROBLEM", "MEDICATION"],
+                             manifest={"manifest_id": "m123"})
+    assert all(f["manifest_id"] == "m123" for f in facts)
+
+
+def test_extract_entities_raises_on_misaligned_classifier():
+    from verichart.clinical.entities import extract_entities
+
+    class BadClf:
+        version = "bad"
+
+        def classify(self, text, mentions):
+            return []  # wrong length
+
+    with pytest.raises(ValueError, match="one per mention"):
+        extract_entities(TEXT, recognizer=_rec(), labels=["PROBLEM"], assertion_classifier=BadClf())

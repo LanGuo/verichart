@@ -164,7 +164,7 @@ def to_facts(
             continue  # a fact with no value is not a fact
         span = gf["span"]
         provenance_type: ProvenanceType = span["provenance_type"] if span else "inferred"
-        facts.append(_fact(
+        facts.append(make_fact(
             label=label,
             value=gf["value"],
             span=span,
@@ -182,7 +182,7 @@ def to_facts(
     for qf in result.quarantined:
         if not qf["value"].strip():
             continue
-        facts.append(_fact(
+        facts.append(make_fact(
             label=qf["field_name"],
             value=qf["value"],
             span=None,
@@ -204,7 +204,7 @@ def _clamp01(x: float) -> float:
     return 0.0 if x < 0.0 else 1.0 if x > 1.0 else x
 
 
-def _fact(
+def make_fact(
     *,
     label: str,
     value: str,
@@ -218,7 +218,15 @@ def _fact(
     model_tag: str | None,
     model_digest: str | None,
     created_at: str,
+    assertion_status: AssertionStatus = "unknown",
 ) -> ClinicalFact:
+    """Build one ClinicalFact with Phase-1 defaults for the fields later phases own.
+
+    Shared by ``to_facts`` (schema extraction) and
+    ``verichart.clinical.extract_entities`` (open-ended NER) so the record shape has
+    exactly one definition. ``concept_*`` and reconciliation fields are always the
+    Phase-1 defaults here; Phase 3 / Phase 5 populate them downstream.
+    """
     return ClinicalFact(
         fact_id=compute_fact_id(
             label=label, value=value, concept_code=None, concept_system=None,
@@ -232,7 +240,7 @@ def _fact(
         value=value,
         value_normalized=None,
         effective_date=effective_date,
-        assertion_status="unknown",
+        assertion_status=assertion_status,
         provenance_type=provenance_type,
         span=span,
         supporting_spans=[span] if span else [],

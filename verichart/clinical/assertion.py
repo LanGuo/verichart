@@ -7,8 +7,12 @@ in ``__init__`` and raises a clear error if it is missing.
 
 from __future__ import annotations
 
-from verichart.clinical.entities import AssertionResult
+from typing import TYPE_CHECKING
+
 from verichart.facts import AssertionStatus
+
+if TYPE_CHECKING:
+    from verichart.clinical.entities import AssertionResult
 
 # First match wins. Negation is the strongest signal; "uncertain" is the weakest
 # non-default. "patient_reported" is not produced by stock ConText — it needs a
