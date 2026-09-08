@@ -170,3 +170,76 @@ def test_to_facts_does_not_mutate_result():
     before = (dict(result.extracted), list(result.quarantined))
     to_facts(result, manifest=manifest)
     assert (dict(result.extracted), list(result.quarantined)) == before
+
+
+# --- to_facts: quarantined fields + edge cases ---
+
+
+def test_to_facts_quarantined_field_is_unverified_not_dropped():
+    from verichart import to_facts
+
+    # "insulin glargine 10 units" is not in SOURCE -> quarantined after fuzzy grounding
+    result, manifest = _result(drug="insulin glargine 10 units", mode="fuzzy")
+    facts = to_facts(result, manifest=manifest)
+    drug = next(f for f in facts if f["label"] == "drug")
+    assert drug["provenance_type"] == "unverified"
+    assert drug["span"] is None
+    assert drug["supporting_spans"] == []
+    assert drug["extraction_confidence"] == 0.0
+    assert drug["note"]  # carries the quarantine reason
+    assert drug["manifest_id"] == manifest["manifest_id"]
+
+
+def test_to_facts_empty_result_returns_empty_list():
+    from veritract import ExtractionResult
+
+    from verichart import to_facts
+
+    assert to_facts(ExtractionResult(extracted={}, quarantined=[])) == []
+
+
+def test_to_facts_order_is_extracted_then_quarantined():
+    from verichart import to_facts
+
+    result, manifest = _result(drug="insulin glargine 10 units", mode="fuzzy")
+    facts = to_facts(result, manifest=manifest)
+    unverified_positions = [i for i, f in enumerate(facts) if f["provenance_type"] == "unverified"]
+    grounded_positions = [i for i, f in enumerate(facts) if f["provenance_type"] != "unverified"]
+    assert max(grounded_positions) < min(unverified_positions)
+
+
+def test_to_facts_effective_date_passthrough():
+    from verichart import to_facts
+
+    result, manifest = _result()
+    facts = to_facts(result, manifest=manifest, effective_date="2025-03-14")
+    assert facts and all(f["effective_date"] == "2025-03-14" for f in facts)
+
+
+def test_to_facts_no_grounding_mode_is_all_inferred():
+    from verichart import to_facts
+
+    result, manifest = _result(mode="no-grounding")
+    facts = to_facts(result, manifest=manifest)
+    assert facts and all(
+        f["provenance_type"] == "inferred" and f["span"] is None for f in facts
+    )
+
+
+def test_to_facts_identical_fact_gets_same_id_across_results():
+    """The dedup-key property: same (label, value, span, manifest) -> same fact_id."""
+    from verichart import to_facts
+
+    r1, m = _result(drug="metformin 500mg twice daily")
+    r2, _ = _result(drug="insulin glargine 10 units", mode="fuzzy")  # only `drug` differs
+    id1 = {f["label"]: f["fact_id"] for f in to_facts(r1, manifest=m)}
+    id2 = {f["label"]: f["fact_id"] for f in to_facts(r2, manifest=m)}
+    assert id1["sample_size"] == id2["sample_size"]  # unchanged field -> same id
+    assert id1["drug"] != id2["drug"]                # changed value -> different id
+
+
+def test_public_api():
+    from verichart import ClinicalFact, compute_fact_id, to_facts
+
+    assert callable(to_facts) and callable(compute_fact_id)
+    assert "fact_id" in ClinicalFact.__annotations__
