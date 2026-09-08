@@ -20,10 +20,14 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from typing_extensions import Literal, TypedDict
 
 from veritract import Span
+
+if TYPE_CHECKING:
+    from veritract import ExtractionResult, PipelineManifest
 
 AssertionStatus = Literal[
     "confirmed",
@@ -116,3 +120,126 @@ def compute_fact_id(
     return hashlib.sha256(
         json.dumps(key, sort_keys=True, separators=(",", ":"), default=str).encode()
     ).hexdigest()
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def to_facts(
+    result: "ExtractionResult",
+    *,
+    patient_pseudonym: str | None = None,
+    effective_date: str | None = None,
+    manifest: "PipelineManifest | None" = None,
+    created_at: str | None = None,
+) -> list[ClinicalFact]:
+    """Project a veritract ``ExtractionResult`` into ``ClinicalFact`` records.
+
+    Pure function — no LLM call, no I/O, does not mutate ``result``.
+
+    Grounded fields become facts with their ``Span`` and its ``provenance_type``
+    (``"inferred"`` when the field grounded without a locatable span). Quarantined
+    fields are *not* dropped: they become facts with ``provenance_type="unverified"``,
+    ``span=None``, ``extraction_confidence=0.0``, and the quarantine reason in ``note``.
+
+    ``manifest`` (a veritract ``PipelineManifest``) supplies ``manifest_id`` and the
+    extraction model tag/digest; without it, ``manifest_id`` falls back to
+    ``result.manifest_id`` and the model fields are ``None``.
+
+    Note: for a result produced with ``mode="no-grounding"`` every field lands in
+    ``result.extracted`` with no span, so every fact becomes ``"inferred"`` — which
+    overstates confidence. Use ``to_facts`` on ``mode="full"`` (or ``"fuzzy"``) results.
+    """
+    manifest_id = manifest["manifest_id"] if manifest else result.manifest_id
+    model_tag = manifest["model_tag"] if manifest else None
+    model_digest = manifest["model_digest"] if manifest else None
+    stamp = created_at if created_at is not None else _now_iso()
+
+    facts: list[ClinicalFact] = []
+
+    for label, gf in result.extracted.items():
+        span = gf["span"]
+        provenance_type: ProvenanceType = span["provenance_type"] if span else "inferred"
+        facts.append(_fact(
+            label=label,
+            value=gf["value"],
+            span=span,
+            provenance_type=provenance_type,
+            confidence=_clamp01(gf["confidence"] / 100.0),
+            note=None,
+            patient_pseudonym=patient_pseudonym,
+            effective_date=effective_date,
+            manifest_id=manifest_id,
+            model_tag=model_tag,
+            model_digest=model_digest,
+            created_at=stamp,
+        ))
+
+    for qf in result.quarantined:
+        facts.append(_fact(
+            label=qf["field_name"],
+            value=qf["value"],
+            span=None,
+            provenance_type="unverified",
+            confidence=0.0,
+            note=qf["reason"],
+            patient_pseudonym=patient_pseudonym,
+            effective_date=effective_date,
+            manifest_id=manifest_id,
+            model_tag=model_tag,
+            model_digest=model_digest,
+            created_at=stamp,
+        ))
+
+    return facts
+
+
+def _clamp01(x: float) -> float:
+    return 0.0 if x < 0.0 else 1.0 if x > 1.0 else x
+
+
+def _fact(
+    *,
+    label: str,
+    value: str,
+    span: Span | None,
+    provenance_type: ProvenanceType,
+    confidence: float,
+    note: str | None,
+    patient_pseudonym: str | None,
+    effective_date: str | None,
+    manifest_id: str | None,
+    model_tag: str | None,
+    model_digest: str | None,
+    created_at: str,
+) -> ClinicalFact:
+    return ClinicalFact(
+        fact_id=compute_fact_id(
+            label=label, value=value, concept_code=None, concept_system=None,
+            span=span, manifest_id=manifest_id,
+        ),
+        patient_pseudonym=patient_pseudonym,
+        label=label,
+        concept_code=None,
+        concept_system=None,
+        concept_display=None,
+        value=value,
+        value_normalized=None,
+        effective_date=effective_date,
+        assertion_status="unknown",
+        provenance_type=provenance_type,
+        span=span,
+        supporting_spans=[span] if span else [],
+        extraction_model=model_tag,
+        extraction_model_digest=model_digest,
+        extraction_confidence=confidence,
+        conflict_set_id=None,
+        resolution_method="none",
+        resolver_id=None,
+        rule_version=None,
+        manifest_id=manifest_id,
+        terminology_version=None,
+        note=note,
+        created_at=created_at,
+    )

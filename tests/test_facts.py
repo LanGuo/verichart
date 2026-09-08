@@ -1,7 +1,32 @@
 import pytest
 
-from veritract import Span
+from veritract import MockLLM, Span, build_manifest, extract
 from verichart.facts import ClinicalFact, compute_fact_id
+
+
+SOURCE = (
+    "In a randomized trial, 248 patients with type 2 diabetes received "
+    "metformin 500mg twice daily or placebo."
+)
+SCHEMA = {
+    "type": "object",
+    "properties": {
+        "sample_size": {"type": "string"},
+        "drug": {"type": "string"},
+    },
+    "required": ["sample_size", "drug"],
+}
+
+
+def _result(drug="metformin 500mg twice daily", **extract_kw):
+    llm = MockLLM()
+    llm.register("Extract", {"sample_size": "248 patients", "drug": drug})
+    manifest = build_manifest(llm, SCHEMA)
+    result = extract(
+        SOURCE, SCHEMA, llm, doc_id="trial:1", source_type="text",
+        manifest=manifest, **extract_kw,
+    )
+    return result, manifest
 
 
 def _span(**over):
@@ -83,3 +108,65 @@ def test_clinical_fact_has_all_six_attribute_categories():
         "note", "created_at",
     ):
         assert expected in keys, expected
+
+
+# --- to_facts: grounded fields ---
+
+
+def test_to_facts_grounded_fields_carry_span_and_provenance():
+    from verichart import to_facts
+
+    result, manifest = _result()
+    facts = to_facts(result, patient_pseudonym="pt_1", manifest=manifest)
+    by_label = {f["label"]: f for f in facts}
+    assert set(by_label) == {"sample_size", "drug"}
+    for f in facts:
+        assert f["span"] is not None
+        assert f["provenance_type"] in ("direct", "paraphrased", "inferred")
+        assert f["supporting_spans"] == [f["span"]]
+        assert 0.0 <= f["extraction_confidence"] <= 1.0
+        assert f["patient_pseudonym"] == "pt_1"
+        assert f["assertion_status"] == "unknown"
+        assert f["manifest_id"] == manifest["manifest_id"]
+        assert f["extraction_model"] == manifest["model_tag"]
+        assert f["extraction_model_digest"] == manifest["model_digest"]
+        assert f["resolution_method"] == "none"
+        assert f["concept_code"] is None
+        assert f["note"] is None
+        assert f["created_at"]
+
+
+def test_to_facts_confidence_is_renormalized():
+    from verichart import to_facts
+
+    result, manifest = _result()
+    facts = to_facts(result, manifest=manifest)
+    assert any(f["extraction_confidence"] == 1.0 for f in facts)  # exact match: 100 -> 1.0
+    assert all(f["extraction_confidence"] <= 1.0 for f in facts)
+
+
+def test_to_facts_fact_id_is_deterministic_across_calls():
+    from verichart import to_facts
+
+    result, manifest = _result()
+    a = to_facts(result, manifest=manifest, created_at="2026-01-01T00:00:00+00:00")
+    b = to_facts(result, manifest=manifest, created_at="2026-06-01T00:00:00+00:00")
+    assert [f["fact_id"] for f in a] == [f["fact_id"] for f in b]
+
+
+def test_to_facts_uses_result_manifest_id_when_no_manifest_arg():
+    from verichart import to_facts
+
+    result, _ = _result()
+    facts = to_facts(result)
+    assert all(f["manifest_id"] == result.manifest_id for f in facts)
+    assert all(f["extraction_model"] is None for f in facts)
+
+
+def test_to_facts_does_not_mutate_result():
+    from verichart import to_facts
+
+    result, manifest = _result()
+    before = (dict(result.extracted), list(result.quarantined))
+    to_facts(result, manifest=manifest)
+    assert (dict(result.extracted), list(result.quarantined)) == before
