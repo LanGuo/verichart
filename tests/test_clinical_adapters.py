@@ -3,6 +3,8 @@
 Marked `clinical` (deselected by the default `-m 'not clinical'`). Run with:
     pytest -m clinical
 """
+import os
+
 import pytest
 
 pytestmark = pytest.mark.clinical
@@ -125,6 +127,58 @@ def test_rule_recognizer_feeds_extract_entities(rule_rec, context_clf):
     assert by_value["pneumonia"]["assertion_status"] == "ruled_out"
     assert by_value["metformin"]["assertion_status"] == "confirmed"
     assert by_value["pneumonia"]["extraction_model"].startswith("medspacy-rules@")
+
+
+# --- GlinerBiomedRecognizer (Task 7) ---
+#
+# Runs real GLiNER-BioMed inference — opt-in via RUN_GLINER_TESTS=1 (the model is a
+# ~400 MB download). The composition logic is covered by mocks in test_clinical_entities.py.
+
+_RUN_GLINER = os.environ.get("RUN_GLINER_TESTS") == "1"
+_gliner_reason = "set RUN_GLINER_TESTS=1 to run GLiNER-BioMed inference tests"
+
+
+@pytest.fixture(scope="module")
+def gliner_rec():
+    if not _RUN_GLINER:
+        pytest.skip(_gliner_reason)
+    pytest.importorskip("gliner")
+    from verichart.clinical.ner import GlinerBiomedRecognizer
+
+    return GlinerBiomedRecognizer()
+
+
+@pytest.mark.skipif(not _RUN_GLINER, reason=_gliner_reason)
+def test_gliner_recognizes_with_exact_offsets(gliner_rec):
+    from verichart.clinical.entities import DEFAULT_GLINER_LABELS
+
+    text = ("62 y/o male with type 2 diabetes mellitus and hypertension, admitted for "
+            "community-acquired pneumonia. Started on ceftriaxone. Hemoglobin A1c was 8.2%.")
+    ms = gliner_rec.recognize(text, list(DEFAULT_GLINER_LABELS.values()))
+    assert ms, "expected at least one entity"
+    for m in ms:
+        assert text[m["char_start"]:m["char_end"]] == m["text"]
+        assert 0.0 <= m["score"] <= 1.0
+        assert m["recognizer"].startswith("Ihor/gliner-biomed-bi-base-v1.0@")
+    values = {m["value"] if "value" in m else m["text"] for m in ms}
+    assert any("diabetes" in v for v in values)
+
+
+@pytest.mark.skipif(not _RUN_GLINER, reason=_gliner_reason)
+def test_gliner_digest_is_hf_revision(gliner_rec):
+    assert gliner_rec.digest is None or gliner_rec.digest.startswith("hf:")
+
+
+@pytest.mark.skipif(not _RUN_GLINER, reason=_gliner_reason)
+def test_gliner_feeds_extract_entities_with_context(gliner_rec, context_clf):
+    from verichart.clinical.entities import DEFAULT_GLINER_LABELS, extract_entities
+
+    text = "No evidence of pneumonia. Patient has diabetes and takes metformin."
+    facts = extract_entities(text, recognizer=gliner_rec,
+                             labels=list(DEFAULT_GLINER_LABELS.values()),
+                             assertion_classifier=context_clf, doc_id="note:9")
+    by_value = {f["value"]: f for f in facts}
+    assert any(f["assertion_status"] == "ruled_out" for f in facts)  # "no evidence of pneumonia"
 
 
 def test_extract_entities_end_to_end_with_context(context_clf):

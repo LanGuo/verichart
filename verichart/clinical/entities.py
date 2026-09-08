@@ -22,6 +22,16 @@ from verichart.facts import ClinicalFact, _now_iso, make_fact
 
 CANONICAL_LABELS = ["PROBLEM", "MEDICATION", "LAB", "PROCEDURE", "VITAL"]
 
+# Label strings that work well with GLiNER-BioMed (terse, single-word where possible).
+# Pass ``list(DEFAULT_GLINER_LABELS.values())`` to a GlinerBiomedRecognizer.
+DEFAULT_GLINER_LABELS = {
+    "PROBLEM": "disease",
+    "MEDICATION": "medication",
+    "LAB": "lab test",
+    "PROCEDURE": "procedure",
+    "VITAL": "vital sign",
+}
+
 _LABEL_SYNONYMS = {
     "problem": "PROBLEM", "disease": "PROBLEM", "condition": "PROBLEM",
     "diagnosis": "PROBLEM", "symptom": "PROBLEM", "finding": "PROBLEM",
