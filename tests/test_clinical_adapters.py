@@ -69,6 +69,64 @@ def test_context_classifier_feeds_derive_assertion_status(context_clf):
     assert derive_assertion_status(r_diab) == "confirmed"
 
 
+# --- MedspacyRuleRecognizer (Task 6) ---
+
+
+@pytest.fixture(scope="module")
+def rule_rec():
+    pytest.importorskip("medspacy")
+    from verichart.clinical.ner import MedspacyRuleRecognizer
+
+    return MedspacyRuleRecognizer([
+        ("pneumonia", "PROBLEM"),
+        ("type 2 diabetes", "PROBLEM"),
+        ("metformin", "MEDICATION"),
+    ])
+
+
+def test_rule_recognizer_exact_offsets_and_labels(rule_rec):
+    text = "History of type 2 diabetes; now with pneumonia. On metformin."
+    ms = rule_rec.recognize(text, ["PROBLEM", "MEDICATION"])
+    assert [(m["text"], m["label"]) for m in ms] == [
+        ("type 2 diabetes", "PROBLEM"),
+        ("pneumonia", "PROBLEM"),
+        ("metformin", "MEDICATION"),
+    ]
+    for m in ms:
+        assert text[m["char_start"]:m["char_end"]] == m["text"]
+        assert m["score"] == 1.0
+        assert m["recognizer"].startswith("medspacy-rules@")
+
+
+def test_rule_recognizer_filters_to_requested_labels(rule_rec):
+    text = "type 2 diabetes treated with metformin"
+    ms = rule_rec.recognize(text, ["MEDICATION"])
+    assert [m["text"] for m in ms] == ["metformin"]
+
+
+def test_rule_recognizer_version_is_stable_for_same_rules():
+    pytest.importorskip("medspacy")
+    from verichart.clinical.ner import MedspacyRuleRecognizer
+
+    a = MedspacyRuleRecognizer([("pneumonia", "PROBLEM")])
+    b = MedspacyRuleRecognizer([("pneumonia", "PROBLEM")])
+    c = MedspacyRuleRecognizer([("sepsis", "PROBLEM")])
+    assert a.version == b.version
+    assert a.version != c.version
+
+
+def test_rule_recognizer_feeds_extract_entities(rule_rec, context_clf):
+    from verichart.clinical.entities import extract_entities
+
+    text = "No evidence of pneumonia. Patient takes metformin."
+    facts = extract_entities(text, recognizer=rule_rec, labels=["PROBLEM", "MEDICATION"],
+                             assertion_classifier=context_clf)
+    by_value = {f["value"]: f for f in facts}
+    assert by_value["pneumonia"]["assertion_status"] == "ruled_out"
+    assert by_value["metformin"]["assertion_status"] == "confirmed"
+    assert by_value["pneumonia"]["extraction_model"].startswith("medspacy-rules@")
+
+
 def test_extract_entities_end_to_end_with_context(context_clf):
     from verichart.clinical.entities import MockRecognizer, extract_entities
 
