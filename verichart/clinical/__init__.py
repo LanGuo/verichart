@@ -29,8 +29,20 @@ from verichart.clinical.entities import (
     normalize_label,
 )
 from verichart.clinical.ner import GlinerBiomedRecognizer, MedspacyRuleRecognizer
+from verichart.clinical.terminology import (
+    DEFAULT_ROUTING,
+    ConceptMatch,
+    ConceptResolver,
+    MockResolver,
+    ScispacyResolver,
+    SqliteLookupResolver,
+    load_vocab_sqlite,
+    resolve_concepts,
+    terminology_versions,
+)
 
 __all__ = [
+    # Phase 2 — entities
     "extract_entities",
     "derive_assertion_status",
     "EntityMention",
@@ -45,4 +57,14 @@ __all__ = [
     "CANONICAL_LABELS",
     "DEFAULT_GLINER_LABELS",
     "normalize_label",
+    # Phase 3 — terminology
+    "resolve_concepts",
+    "terminology_versions",
+    "ConceptResolver",
+    "ConceptMatch",
+    "DEFAULT_ROUTING",
+    "MockResolver",
+    "SqliteLookupResolver",
+    "ScispacyResolver",
+    "load_vocab_sqlite",
 ]

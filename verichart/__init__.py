@@ -7,6 +7,14 @@ document, exact span, extraction model + config version, confidence, and
 """
 
 from verichart.clinical.entities import extract_entities
+from verichart.clinical.terminology import resolve_concepts
 from verichart.facts import ClinicalFact, compute_fact_id, make_fact, to_facts
 
-__all__ = ["ClinicalFact", "to_facts", "extract_entities", "compute_fact_id", "make_fact"]
+__all__ = [
+    "ClinicalFact",
+    "to_facts",
+    "extract_entities",
+    "resolve_concepts",
+    "compute_fact_id",
+    "make_fact",
+]

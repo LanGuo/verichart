@@ -253,6 +253,22 @@ def test_sqlite_resolver_feeds_resolve_concepts(med_db):
     assert out[0]["terminology_version"] == "2024AB"
 
 
+def test_public_api():
+    from verichart import resolve_concepts as top_level
+    from verichart.clinical import (
+        DEFAULT_ROUTING,
+        ScispacyResolver,
+        SqliteLookupResolver,
+        load_vocab_sqlite,
+        terminology_versions,
+    )
+
+    assert callable(top_level)
+    assert callable(load_vocab_sqlite) and callable(terminology_versions)
+    assert all(isinstance(c, type) for c in (SqliteLookupResolver, ScispacyResolver))
+    assert set(DEFAULT_ROUTING) == {"PROBLEM", "MEDICATION", "LAB", "PROCEDURE", "VITAL"}
+
+
 def test_load_vocab_sqlite_cli(tmp_path):
     import subprocess
     import sys

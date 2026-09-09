@@ -16,9 +16,9 @@ mutates are deliberately **not** in it.
 | **Identity** | `fact_id` | `compute_fact_id(...)` | — (it *is* the id) |
 | | `patient_pseudonym` | caller-supplied to `to_facts()` | no |
 | | `label` | schema field name (Phase 1) / entity label (Phase 2) | **yes** |
-| **Clinical content** | `concept_code` | Phase 3 (terminology resolution) — `None` in Phase 1 | **yes** |
-| | `concept_system` | Phase 3 — `"SNOMED-CT"` / `"RxNorm"` / `"LOINC"` / `"ICD-10-CM"` | **yes** |
-| | `concept_display` | Phase 3 | no |
+| **Clinical content** | `concept_code` | Phase 3 — `resolve_concepts` sets it from a `ConceptResolver` match; `None` until then. **Recomputes `fact_id`.** | **yes** |
+| | `concept_system` | Phase 3 — `"SNOMED-CT"` / `"RxNorm"` / `"LOINC"` / `"ICD-10-CM"` / `"UMLS"` | **yes** |
+| | `concept_display` | Phase 3 — the resolver's canonical/preferred term | no |
 | | `value` | `GroundedField["value"]` / `QuarantinedField["value"]` | **yes** |
 | | `value_normalized` | Phase 4 / 6 (unit + format normalization) — `None` in Phase 1 | no |
 | | `effective_date` | caller-supplied in Phase 1; Phase 6 extracts from text | no |
@@ -34,7 +34,7 @@ mutates are deliberately **not** in it.
 | | `resolver_id` | Phase 5 — `None` in Phase 1 | no |
 | | `rule_version` | Phase 5 — `None` in Phase 1 | no |
 | **Versioning** | `manifest_id` | `manifest["manifest_id"]` or `result.manifest_id` | **yes** |
-| | `terminology_version` | Phase 3 — `None` in Phase 1 | no |
+| | `terminology_version` | Phase 3 — the resolved code's release (`resolver.version`); `terminology_versions(resolvers)` feeds the manifest | no |
 | **(annotation)** | `note` | quarantine reason in Phase 1; free-form later | no |
 | **(bookkeeping)** | `created_at` | `to_facts()` call time, or the `created_at=` argument | no |
 
