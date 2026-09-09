@@ -39,12 +39,14 @@ class ConceptResolver(Protocol):
 
 
 # label -> ordered systems to try. First match at/above min_score wins.
+# "UMLS" is the fallback because scispaCy's umls / rxnorm / mesh linkers all
+# identify concepts by UMLS CUI (see ScispacyResolver).
 DEFAULT_ROUTING: dict[str, tuple[str, ...]] = {
     "PROBLEM": ("SNOMED-CT", "ICD-10-CM", "UMLS"),
-    "MEDICATION": ("RxNorm",),
-    "LAB": ("LOINC",),
-    "PROCEDURE": ("SNOMED-CT",),
-    "VITAL": ("LOINC",),
+    "MEDICATION": ("RxNorm", "UMLS"),
+    "LAB": ("LOINC", "UMLS"),
+    "PROCEDURE": ("SNOMED-CT", "UMLS"),
+    "VITAL": ("LOINC", "UMLS"),
 }
 
 
@@ -293,6 +295,63 @@ class SqliteLookupResolver:
         return ConceptMatch(
             code=code, display=self._preferred_display(code, best[0]),
             system=self.system, version=self.version, score=best[1] / 100.0,
+        )
+
+
+# --------------------------------------------------------------- ScispacyResolver
+
+
+class ScispacyResolver:
+    """Resolver backed by a scispaCy entity linker (UMLS / RxNorm / MeSH / GO / HPO).
+
+    Needs ``verichart[clinical]``. The knowledge base is a frozen snapshot scispaCy
+    redistributes (UMLS 2020AA); ``.version`` records the scispaCy version + linker.
+
+    scispaCy's ``umls`` / ``rxnorm`` / ``mesh`` linkers all identify concepts by **UMLS
+    CUI** — the ``linker_name`` only scopes which concepts are candidates (use ``rxnorm``
+    for drugs, ``mesh`` for MeSH-covered topics). So ``.system`` is ``"UMLS"`` for all
+    three; ``go`` / ``hpo`` keep their own prefixed ids. For SNOMED / LOINC / ICD-10-CM
+    *codes*, use ``SqliteLookupResolver`` over your own release. ``context`` is accepted
+    but unused in this version.
+    """
+
+    _SYSTEMS = {"rxnorm": "UMLS", "umls": "UMLS", "mesh": "UMLS", "go": "GO", "hpo": "HPO"}
+
+    def __init__(self, linker_name: str = "rxnorm", *, k: int = 10, threshold: float = 0.7):
+        if linker_name not in self._SYSTEMS:
+            raise ValueError(f"linker_name must be one of {sorted(self._SYSTEMS)}")
+        try:
+            import scispacy  # noqa: F401
+            from scispacy.candidate_generation import CandidateGenerator
+        except ImportError as e:  # pragma: no cover
+            raise ImportError(
+                "ScispacyResolver needs the clinical extra: pip install 'verichart[clinical]'"
+            ) from e
+
+        import scispacy as _sci
+
+        self.system = self._SYSTEMS[linker_name]
+        self.version = f"scispacy{_sci.__version__}-{linker_name}"
+        self._cg = CandidateGenerator(name=linker_name)
+        self._k = k
+        self._threshold = threshold
+
+    def resolve(self, mention: str, context: str | None = None) -> ConceptMatch | None:
+        cands = self._cg([mention], self._k)[0]
+        if not cands:
+            return None
+        best = max(cands, key=lambda c: max(c.similarities, default=0.0))
+        score = max(best.similarities, default=0.0)
+        if score < self._threshold:
+            return None
+        ent = self._cg.kb.cui_to_entity.get(best.concept_id)
+        display = (
+            ent.canonical_name if ent is not None
+            else (best.aliases[0] if best.aliases else best.concept_id)
+        )
+        return ConceptMatch(
+            code=best.concept_id, display=display,
+            system=self.system, version=self.version, score=float(score),
         )
 
 

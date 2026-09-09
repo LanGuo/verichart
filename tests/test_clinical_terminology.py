@@ -34,9 +34,10 @@ def test_mock_resolver_default_score_is_one():
 
 
 def test_default_routing_shape():
-    assert DEFAULT_ROUTING["MEDICATION"] == ("RxNorm",)
+    assert DEFAULT_ROUTING["MEDICATION"][0] == "RxNorm"
     assert "SNOMED-CT" in DEFAULT_ROUTING["PROBLEM"]
-    assert DEFAULT_ROUTING["LAB"] == ("LOINC",)
+    assert DEFAULT_ROUTING["LAB"][0] == "LOINC"
+    assert all("UMLS" in systems for systems in DEFAULT_ROUTING.values())
 
 
 def test_terminology_versions_maps_system_to_version():
