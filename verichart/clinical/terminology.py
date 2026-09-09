@@ -159,3 +159,180 @@ def _resolve_one(fact, resolvers, by_system, routing, documents, context_chars, 
         if m is not None and m["score"] >= min_score:
             return m
     return None
+
+
+# --------------------------------------------------------- SqliteLookupResolver
+
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS concepts (
+    code TEXT NOT NULL,
+    term TEXT NOT NULL,
+    is_preferred INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_concepts_term ON concepts (term COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS ix_concepts_code ON concepts (code);
+"""
+
+
+def _norm_ws(s: str) -> str:
+    return " ".join(s.split())
+
+
+def load_vocab_sqlite(
+    rows: Iterable[tuple[str, str, bool]],
+    db_path: str,
+    *,
+    replace: bool = True,
+) -> int:
+    """Build a ``SqliteLookupResolver`` DB from ``(code, term, is_preferred)`` rows.
+
+    Returns the number of rows written. ``replace=True`` drops any existing table.
+    """
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    try:
+        if replace:
+            conn.execute("DROP TABLE IF EXISTS concepts")
+        conn.executescript(_SCHEMA)
+        n = 0
+        batch = []
+        for code, term, is_pref in rows:
+            batch.append((str(code), str(term), 1 if is_pref else 0))
+            if len(batch) >= 10_000:
+                conn.executemany(
+                    "INSERT INTO concepts (code, term, is_preferred) VALUES (?, ?, ?)", batch
+                )
+                n += len(batch)
+                batch.clear()
+        if batch:
+            conn.executemany(
+                "INSERT INTO concepts (code, term, is_preferred) VALUES (?, ?, ?)", batch
+            )
+            n += len(batch)
+        conn.commit()
+        return n
+    finally:
+        conn.close()
+
+
+class SqliteLookupResolver:
+    """Deterministic lexical resolver over a local vocabulary DB.
+
+    Exact match (case-insensitive, whitespace-normalized) scores 1.0; otherwise a
+    rapidfuzz ``token_sort_ratio`` over candidates sharing the leading token, gated by
+    ``fuzzy_threshold`` (0-100). Ignores ``context``. Build the DB with
+    ``load_vocab_sqlite`` or the ``python -m verichart.clinical.terminology load`` CLI.
+    """
+
+    def __init__(
+        self,
+        db_path: str,
+        *,
+        system: str,
+        version: str,
+        fuzzy_threshold: int = 88,
+        fuzzy_candidates: int = 200,
+    ):
+        import sqlite3
+
+        self.system = system
+        self.version = version
+        self._threshold = fuzzy_threshold
+        self._cap = fuzzy_candidates
+        self._conn = sqlite3.connect(
+            f"file:{db_path}?mode=ro", uri=True, check_same_thread=False
+        )
+
+    def _preferred_display(self, code: str, fallback: str) -> str:
+        row = self._conn.execute(
+            "SELECT term FROM concepts WHERE code = ? ORDER BY is_preferred DESC LIMIT 1", (code,)
+        ).fetchone()
+        return row[0] if row else fallback
+
+    def resolve(self, mention: str, context: str | None = None) -> ConceptMatch | None:
+        q = _norm_ws(mention)
+        if not q:
+            return None
+
+        # 1. exact / whitespace-normalized (COLLATE NOCASE index)
+        row = self._conn.execute(
+            "SELECT code, term FROM concepts WHERE term = ? COLLATE NOCASE "
+            "ORDER BY is_preferred DESC LIMIT 1",
+            (q,),
+        ).fetchone()
+        if row is None and q != mention:
+            row = self._conn.execute(
+                "SELECT code, term FROM concepts WHERE term = ? COLLATE NOCASE "
+                "ORDER BY is_preferred DESC LIMIT 1",
+                (mention,),
+            ).fetchone()
+        if row is not None:
+            code = row[0]
+            return ConceptMatch(
+                code=code, display=self._preferred_display(code, row[1]),
+                system=self.system, version=self.version, score=1.0,
+            )
+
+        # 2. fuzzy over candidates sharing the leading token
+        from rapidfuzz import fuzz, process
+
+        head = q.split(" ", 1)[0]
+        cands = self._conn.execute(
+            "SELECT code, term FROM concepts WHERE term LIKE ? COLLATE NOCASE LIMIT ?",
+            (head + "%", self._cap),
+        ).fetchall()
+        if not cands:
+            return None
+        terms = [t for _, t in cands]
+        best = process.extractOne(q, terms, scorer=fuzz.token_sort_ratio)
+        if best is None or best[1] < self._threshold:
+            return None
+        code = cands[best[2]][0]
+        return ConceptMatch(
+            code=code, display=self._preferred_display(code, best[0]),
+            system=self.system, version=self.version, score=best[1] / 100.0,
+        )
+
+
+# ------------------------------------------------------------------------ CLI
+
+
+def _cli(argv: list[str] | None = None) -> int:
+    import argparse
+    import csv
+
+    parser = argparse.ArgumentParser(prog="python -m verichart.clinical.terminology")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    load = sub.add_parser("load", help="build a SqliteLookupResolver DB from a CSV/TSV")
+    load.add_argument("--csv", required=True)
+    load.add_argument("--db", required=True)
+    load.add_argument("--code-col", required=True)
+    load.add_argument("--term-col", required=True)
+    load.add_argument("--preferred-col", default=None,
+                      help="column whose truthy value marks the display term")
+    load.add_argument("--delimiter", default=",")
+    args = parser.parse_args(argv)
+
+    with open(args.csv, newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh, delimiter=args.delimiter)
+
+        def _rows():
+            for r in reader:
+                code = r[args.code_col].strip()
+                term = r[args.term_col].strip()
+                if not code or not term:
+                    continue
+                pref = bool(r.get(args.preferred_col, "").strip()) if args.preferred_col else False
+                if args.preferred_col:
+                    pref = r[args.preferred_col].strip() not in ("", "0", "false", "False", "N")
+                yield code, term, pref
+
+        n = load_vocab_sqlite(_rows(), args.db)
+    print(f"wrote {n} rows to {args.db}")
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(_cli())

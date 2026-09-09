@@ -168,3 +168,104 @@ def test_resolve_concepts_unknown_label_tries_all_resolvers():
     rx.register("aspirin", code="1191", display="Aspirin")
     out = resolve_concepts(facts, [rx])
     assert out[0]["concept_code"] == "1191"
+
+
+# --- SqliteLookupResolver + loader (Task 3) ---
+
+VOCAB = [  # (code, term, is_preferred)
+    ("6809", "Metformin", True),
+    ("6809", "metformin hydrochloride", False),
+    ("6809", "Glucophage", False),
+    ("1191", "Aspirin", True),
+    ("1191", "acetylsalicylic acid", False),
+    ("29046", "Lisinopril", True),
+]
+
+
+@pytest.fixture
+def med_db(tmp_path):
+    from verichart.clinical.terminology import load_vocab_sqlite
+
+    p = tmp_path / "rx.db"
+    load_vocab_sqlite(VOCAB, str(p))
+    return str(p)
+
+
+def test_load_vocab_sqlite_row_count(tmp_path):
+    from verichart.clinical.terminology import load_vocab_sqlite
+
+    n = load_vocab_sqlite(VOCAB, str(tmp_path / "x.db"))
+    assert n == len(VOCAB)
+
+
+def test_sqlite_resolver_exact_match(med_db):
+    from verichart.clinical.terminology import SqliteLookupResolver
+
+    r = SqliteLookupResolver(med_db, system="RxNorm", version="2024AB")
+    m = r.resolve("metformin")
+    assert m["code"] == "6809"
+    assert m["score"] == 1.0
+    assert m["display"] == "Metformin"  # the is_preferred term for the code
+    assert m["system"] == "RxNorm" and m["version"] == "2024AB"
+
+
+def test_sqlite_resolver_synonym_exact(med_db):
+    from verichart.clinical.terminology import SqliteLookupResolver
+
+    r = SqliteLookupResolver(med_db, system="RxNorm", version="v")
+    assert r.resolve("Glucophage")["code"] == "6809"
+
+
+def test_sqlite_resolver_whitespace_normalized(med_db):
+    from verichart.clinical.terminology import SqliteLookupResolver
+
+    r = SqliteLookupResolver(med_db, system="RxNorm", version="v")
+    assert r.resolve("  metformin   hydrochloride ")["code"] == "6809"
+
+
+def test_sqlite_resolver_fuzzy(med_db):
+    from verichart.clinical.terminology import SqliteLookupResolver
+
+    r = SqliteLookupResolver(med_db, system="RxNorm", version="v", fuzzy_threshold=80)
+    m = r.resolve("acetylsalicylic acid tablet")
+    assert m["code"] == "1191"
+    assert 0.0 < m["score"] < 1.0
+
+
+def test_sqlite_resolver_miss(med_db):
+    from verichart.clinical.terminology import SqliteLookupResolver
+
+    r = SqliteLookupResolver(med_db, system="RxNorm", version="v", fuzzy_threshold=95)
+    assert r.resolve("ibuprofen") is None
+
+
+def test_sqlite_resolver_feeds_resolve_concepts(med_db):
+    from verichart.clinical.entities import MockRecognizer, extract_entities
+    from verichart.clinical.terminology import SqliteLookupResolver, resolve_concepts
+
+    rec = MockRecognizer()
+    rec.register("metformin", label="MEDICATION", score=0.9)
+    facts = extract_entities("takes metformin", recognizer=rec, labels=["MEDICATION"])
+    r = SqliteLookupResolver(med_db, system="RxNorm", version="2024AB")
+    out = resolve_concepts(facts, [r])
+    assert out[0]["concept_code"] == "6809"
+    assert out[0]["terminology_version"] == "2024AB"
+
+
+def test_load_vocab_sqlite_cli(tmp_path):
+    import subprocess
+    import sys
+
+    csv_path = tmp_path / "rx.csv"
+    csv_path.write_text("RXCUI,STR,PREF\n6809,Metformin,1\n6809,Glucophage,0\n")
+    db_path = tmp_path / "rx.db"
+    subprocess.run(
+        [sys.executable, "-m", "verichart.clinical.terminology", "load",
+         "--csv", str(csv_path), "--db", str(db_path),
+         "--code-col", "RXCUI", "--term-col", "STR", "--preferred-col", "PREF"],
+        check=True, capture_output=True,
+    )
+    from verichart.clinical.terminology import SqliteLookupResolver
+
+    r = SqliteLookupResolver(str(db_path), system="RxNorm", version="v")
+    assert r.resolve("glucophage")["code"] == "6809"
