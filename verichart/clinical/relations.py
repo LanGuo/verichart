@@ -421,3 +421,76 @@ def extract_relations(
         manifest=manifest, created_at=created_at,
         keep_unlinked_attributes=keep_unlinked_attributes,
     )
+
+
+# --------------------------------------------------------------------- LlmRelationExtractor
+
+_LLM_ATTRIBUTES: dict[str, list[str]] = {
+    "MEDICATION": ["strength", "dose", "form", "route", "frequency", "duration"],
+    "LAB": ["value", "unit"],
+    "PROBLEM": ["severity", "laterality", "body_site", "stage"],
+}
+
+
+class LlmRelationExtractor:
+    """Per-anchor relation extraction via veritract: a constrained-decoding schema of the
+    anchor's attributes, then ``ground`` — so an attribute the model invents but cannot be
+    found in the text is dropped, never linked. One LLM call per anchor.
+    """
+
+    def __init__(self, llm, *, attributes_for: dict[str, list[str]] | None = None,
+                 ground_mode: str = "fuzzy"):
+        self.llm = llm
+        self.attributes_for = attributes_for or _LLM_ATTRIBUTES
+        self.ground_mode = ground_mode
+        self.version = f"llm-relations@{getattr(llm, 'model', 'unknown')}"
+        try:
+            self.digest = llm.model_digest()
+        except Exception:
+            self.digest = None
+
+    def extract(self, text: str, entities: list[EntityMention]) -> list[ClinicalRelation]:
+        from veritract import extract_raw, ground
+
+        anchors = [e for e in entities if e["label"] in _ANCHOR_FAMILIES]
+        rels: list[ClinicalRelation] = []
+
+        for anchor in anchors:
+            fields = self.attributes_for.get(anchor["label"])
+            if not fields:
+                continue
+            schema = {
+                "type": "object",
+                "properties": {f: {"type": "string"} for f in fields},
+                "required": list(fields),
+            }
+            prompt = (
+                f"From the clinical text, extract the attributes of the "
+                f"{anchor['label'].lower()} \"{anchor['text']}\" "
+                f"(characters {anchor['char_start']}–{anchor['char_end']}).\n"
+                f"For each field give the exact verbatim phrase from the text, or \"\" if absent. "
+                f"Do not paraphrase."
+            )
+            raw = extract_raw(text, schema, self.llm, prompt=prompt, source_type="clinical_note")
+            result = ground(raw, self.llm, mode=self.ground_mode)
+
+            for field, gf in result.extracted.items():
+                span = gf["span"]
+                if span is None:
+                    continue  # a relation needs a locatable tail
+                attr = field.upper()
+                relation = _RELATION_FOR_ATTR.get(attr)
+                if relation is None:
+                    continue
+                tail = EntityMention(
+                    text=span["text"], char_start=span["char_start"], char_end=span["char_end"],
+                    label=attr, raw_label=field, score=gf["confidence"] / 100.0,
+                    recognizer=self.version,
+                )
+                rels.append(ClinicalRelation(
+                    relation=relation, head=anchor, tail=tail,
+                    score=gf["confidence"] / 100.0, extractor=self.version,
+                    method="llm-grounded", direction=_direction(anchor, tail),
+                    token_gap=_token_gap(text, anchor, tail),
+                ))
+        return rels

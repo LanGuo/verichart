@@ -358,3 +358,52 @@ def test_extract_relations_end_to_end():
     (comp,) = [f for f in out if f["label"] == "MEDICATION"]
     assert comp["value"] == "metformin 500 mg twice daily"
     assert any(f["value"] == "hypertension" for f in out)
+
+
+# --- LlmRelationExtractor (mock LLM; real Ollama test in test_clinical_relations_llm.py) ---
+
+
+def test_llm_relation_extractor_with_mock_llm():
+    from veritract import MockLLM
+
+    from verichart.clinical.relations import LlmRelationExtractor
+
+    text = "Start metformin 500 mg PO twice daily."
+    llm = MockLLM()
+    llm.register("metformin", {
+        "strength": "500 mg", "dose": "", "form": "", "route": "PO",
+        "frequency": "twice daily", "duration": "",
+    })
+    ext = LlmRelationExtractor(llm)
+    rels = ext.extract(text, [_m("metformin", text.index("metformin"), "MEDICATION")])
+
+    got = {r["relation"]: r["tail"]["text"] for r in rels}
+    assert got == {"HAS_STRENGTH": "500 mg", "HAS_ROUTE": "PO", "HAS_FREQUENCY": "twice daily"}
+    for r in rels:
+        assert text[r["tail"]["char_start"]:r["tail"]["char_end"]] == r["tail"]["text"]
+        assert r["method"] == "llm-grounded"
+        assert r["extractor"].startswith("llm-relations@")
+
+
+def test_llm_relation_extractor_drops_ungroundable_value():
+    from veritract import MockLLM
+
+    from verichart.clinical.relations import LlmRelationExtractor
+
+    text = "Start metformin 500 mg."
+    llm = MockLLM()
+    llm.register("metformin", {
+        "strength": "500 mg", "dose": "", "form": "",
+        "route": "intravenous", "frequency": "", "duration": "",  # "intravenous" not in text
+    })
+    rels = LlmRelationExtractor(llm).extract(
+        text, [_m("metformin", text.index("metformin"), "MEDICATION")])
+    assert {r["relation"] for r in rels} == {"HAS_STRENGTH"}     # route dropped by grounding
+
+
+def test_llm_relation_extractor_no_anchors():
+    from veritract import MockLLM
+
+    from verichart.clinical.relations import LlmRelationExtractor
+
+    assert LlmRelationExtractor(MockLLM()).extract("some text", []) == []
