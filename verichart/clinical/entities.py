@@ -32,6 +32,16 @@ DEFAULT_GLINER_LABELS = {
     "VITAL": "vital sign",
 }
 
+# Attribute label sets (Phase 4): canonical attribute -> GLiNER label string.
+MEDICATION_ATTRIBUTE_LABELS = {
+    "STRENGTH": "drug strength", "DOSE": "drug dose", "FREQUENCY": "drug frequency",
+    "ROUTE": "drug route", "FORM": "drug form", "DURATION": "drug duration",
+}
+LAB_ATTRIBUTE_LABELS = {"VALUE": "lab value", "UNIT": "lab unit"}
+PROBLEM_ATTRIBUTE_LABELS = {
+    "SEVERITY": "severity", "STAGE": "stage", "BODY_SITE": "body site", "LATERALITY": "laterality",
+}
+
 _LABEL_SYNONYMS = {
     "problem": "PROBLEM", "disease": "PROBLEM", "condition": "PROBLEM",
     "diagnosis": "PROBLEM", "symptom": "PROBLEM", "finding": "PROBLEM",
@@ -39,6 +49,17 @@ _LABEL_SYNONYMS = {
     "lab": "LAB", "lab test": "LAB", "laboratory test": "LAB", "test": "LAB",
     "procedure": "PROCEDURE",
     "vital": "VITAL", "vital sign": "VITAL",
+    # attribute synonyms (Phase 4)
+    "drug strength": "STRENGTH", "strength": "STRENGTH",
+    "drug dose": "DOSE", "dose": "DOSE", "dosage": "DOSE",
+    "drug frequency": "FREQUENCY", "frequency": "FREQUENCY",
+    "drug route": "ROUTE", "route": "ROUTE",
+    "drug form": "FORM",
+    "drug duration": "DURATION", "duration": "DURATION",
+    "lab value": "VALUE",
+    "lab unit": "UNIT",
+    "severity": "SEVERITY", "stage": "STAGE",
+    "body site": "BODY_SITE", "laterality": "LATERALITY",
 }
 
 
