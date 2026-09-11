@@ -104,3 +104,105 @@ def test_mock_relation_extractor_registered_links():
 def test_mock_relation_extractor_no_rule_no_relation():
     ext = MockRelationExtractor()
     assert ext.extract("metformin 500 mg", [_m("metformin", 0, "MEDICATION")]) == []
+
+
+# --- RuleRelationLinker ---
+
+
+def _ents(text, specs):
+    """specs: list of (substring, label). Offsets from text.find."""
+    return [_m(s, text.index(s), lbl) for s, lbl in specs]
+
+
+def _linker(**kw):
+    from verichart.clinical.relations import RuleRelationLinker
+    return RuleRelationLinker(**kw)
+
+
+def test_rule_linker_contiguous_sig():
+    text = "metformin 500 mg twice daily"
+    ents = _ents(text, [("metformin", "MEDICATION"), ("500 mg", "STRENGTH"),
+                        ("twice daily", "FREQUENCY")])
+    rels = _linker().extract(text, ents)
+    assert {r["relation"] for r in rels} == {"HAS_STRENGTH", "HAS_FREQUENCY"}
+    for r in rels:
+        assert r["head"]["text"] == "metformin"
+        assert r["direction"] == "right"
+        assert r["method"] == "rule:only-anchor"
+        assert r["token_gap"] >= 0
+
+
+def test_rule_linker_pre_posed_strength():
+    text = "500 mg metformin daily"
+    ents = _ents(text, [("500 mg", "STRENGTH"), ("metformin", "MEDICATION")])
+    (r,) = [x for x in _linker().extract(text, ents) if x["relation"] == "HAS_STRENGTH"]
+    assert r["head"]["text"] == "metformin"
+    assert r["direction"] == "left"
+
+
+def test_rule_linker_two_meds_no_crossing():
+    text = "lisinopril 10 mg and metformin 500 mg"
+    ents = _ents(text, [("lisinopril", "MEDICATION"), ("10 mg", "STRENGTH"),
+                        ("metformin", "MEDICATION"), ("500 mg", "STRENGTH")])
+    rels = _linker().extract(text, ents)
+    got = {r["tail"]["text"]: r["head"]["text"] for r in rels}
+    assert got == {"10 mg": "lisinopril", "500 mg": "metformin"}
+
+
+def test_rule_linker_declines_positional_coordination():
+    text = "metformin and lisinopril 500 mg and 10 mg respectively"
+    ents = _ents(text, [("metformin", "MEDICATION"), ("lisinopril", "MEDICATION"),
+                        ("500 mg", "STRENGTH"), ("10 mg", "STRENGTH")])
+    rels = _linker().extract(text, ents)
+    assert not any(r["tail"]["text"] == "500 mg" and r["head"]["text"] == "lisinopril"
+                   for r in rels)
+    # the ambiguous coordination is declined, not guessed
+    assert rels == []
+
+
+def test_rule_linker_scope_is_sentence():
+    text = "Continue metformin daily. Dose is 500 mg."
+    ents = _ents(text, [("metformin", "MEDICATION"), ("500 mg", "STRENGTH")])
+    assert _linker().extract(text, ents) == []
+
+
+def test_rule_linker_family_compatibility():
+    text = "metformin level was 8.2"
+    ents = _ents(text, [("metformin", "MEDICATION"), ("8.2", "VALUE")])
+    assert _linker().extract(text, ents) == []          # VALUE needs a LAB anchor
+
+
+def test_rule_linker_lab_value_unit():
+    text = "Hemoglobin A1c 8.2 %"
+    ents = _ents(text, [("Hemoglobin A1c", "LAB"), ("8.2", "VALUE"), ("%", "UNIT")])
+    rels = _linker().extract(text, ents)
+    assert {r["relation"] for r in rels} == {"HAS_VALUE", "HAS_UNIT"}
+    assert all(r["head"]["text"] == "Hemoglobin A1c" for r in rels)
+
+
+def test_rule_linker_unsafe_relations_gated():
+    text = "metformin 500 mg for 3 months"
+    ents = _ents(text, [("metformin", "MEDICATION"), ("500 mg", "STRENGTH"),
+                        ("for 3 months", "DURATION")])
+    default = _linker().extract(text, ents)
+    assert "HAS_DURATION" not in {r["relation"] for r in default}
+
+    with_dur = _linker(emit_relations={"HAS_STRENGTH", "HAS_DURATION"}).extract(text, ents)
+    assert {r["relation"] for r in with_dur} == {"HAS_STRENGTH", "HAS_DURATION"}
+
+
+def test_rule_linker_version_stable_and_scope_validated():
+    a, b = _linker().version, _linker().version
+    assert a == b and a.endswith(":sentence")
+    assert _linker(scope="clause").version.endswith(":clause")
+    with pytest.raises(ValueError, match="scope"):
+        _linker(scope="paragraph")
+
+
+def test_rule_linker_does_not_mutate_entities():
+    text = "metformin 500 mg twice daily"
+    ents = _ents(text, [("metformin", "MEDICATION"), ("500 mg", "STRENGTH"),
+                        ("twice daily", "FREQUENCY")])
+    snapshot = [dict(e) for e in ents]
+    _linker().extract(text, ents)
+    assert [dict(e) for e in ents] == snapshot

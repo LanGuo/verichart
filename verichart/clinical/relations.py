@@ -119,3 +119,141 @@ class MockRelationExtractor:
                         direction=_direction(h, t), token_gap=_token_gap(text, h, t),
                     ))
         return rels
+
+
+# --------------------------------------------------------------------- RuleRelationLinker
+
+_ANCHOR_FAMILIES = {"MEDICATION", "LAB", "PROBLEM"}
+
+# attribute -> (anchor family, directional prior, safe for a deterministic linker)
+#   "follows"  = attribute normally follows the anchor  ("metformin ... PO BID")
+#   "precedes" = attribute normally precedes the anchor ("severe pneumonia")
+#   "either"   = no strong prior
+_ATTR_RULES: dict[str, tuple[str, str, bool]] = {
+    "STRENGTH":   ("MEDICATION", "either",   True),
+    "DOSE":       ("MEDICATION", "either",   True),
+    "FORM":       ("MEDICATION", "either",   True),
+    "ROUTE":      ("MEDICATION", "follows",  True),
+    "FREQUENCY":  ("MEDICATION", "follows",  True),
+    "DURATION":   ("MEDICATION", "follows",  False),
+    "VALUE":      ("LAB",        "follows",  True),
+    "UNIT":       ("LAB",        "follows",  True),
+    "SEVERITY":   ("PROBLEM",    "precedes", True),
+    "LATERALITY": ("PROBLEM",    "either",   True),
+    "BODY_SITE":  ("PROBLEM",    "follows",  False),
+    "STAGE":      ("PROBLEM",    "follows",  False),
+}
+
+_SAFE_RELATIONS = frozenset(
+    _RELATION_FOR_ATTR[a] for a, (_, _, safe) in _ATTR_RULES.items() if safe
+)
+
+# split on sentence/clause punctuation but not inside a decimal ("8.2") or a grouped
+# number ("1,000"); newlines always split.
+_SCOPE_SPLIT = {
+    "sentence": re.compile(r"(?<!\d)[.;!?](?!\d)|\n"),
+    "clause": re.compile(r"(?<!\d)[.;!?,](?!\d)|\n"),
+}
+_COORD_CUE = re.compile(r"\brespectively\b", re.IGNORECASE)
+
+
+class RuleRelationLinker:
+    """Ordered-directional linker (MedEx lineage) — deterministic, no model.
+
+    For each attribute mention, link to the nearest anchor of the compatible family in
+    the same scope unit, biased by a per-attribute-type directional prior. Positional
+    coordination ("... 500 mg and 10 mg respectively") is declined, not guessed.
+
+    Only the research-"safe" relation types are emitted by default
+    (``docs/research/clinical-relation-extraction.md``); pass ``emit_relations`` to add
+    duration / body-site / stage etc. (route those to ``LlmRelationExtractor`` instead).
+    """
+
+    digest = None
+
+    def __init__(self, *, emit_relations: set[str] | None = None, scope: str = "sentence"):
+        if scope not in _SCOPE_SPLIT:
+            raise ValueError(f"scope must be one of {sorted(_SCOPE_SPLIT)}")
+        self.emit_relations = frozenset(emit_relations) if emit_relations else _SAFE_RELATIONS
+        self.scope = scope
+        import hashlib
+
+        tag = hashlib.sha256(
+            repr((sorted(self.emit_relations), scope)).encode()
+        ).hexdigest()[:8]
+        self.version = f"rule-relations@{tag}:{scope}"
+
+    def _scope_of(self, pos: int, bounds: list[tuple[int, int]]) -> int:
+        for i, (s, e) in enumerate(bounds):
+            if s <= pos < e:
+                return i
+        return -1
+
+    def extract(self, text: str, entities: list[EntityMention]) -> list[ClinicalRelation]:
+        # scope-unit boundaries
+        bounds: list[tuple[int, int]] = []
+        pos = 0
+        for piece in _SCOPE_SPLIT[self.scope].split(text):
+            bounds.append((pos, pos + len(piece)))
+            pos += len(piece) + 1
+
+        anchors = [e for e in entities if e["label"] in _ANCHOR_FAMILIES]
+        attrs = [e for e in entities if e["label"] in _ATTR_RULES]
+        scope_of = {id(a): self._scope_of(a["char_start"], bounds) for a in anchors + attrs}
+
+        rels: list[ClinicalRelation] = []
+        for t in sorted(attrs, key=lambda m: m["char_start"]):
+            family, prior, _safe = _ATTR_RULES[t["label"]]
+            relation = _RELATION_FOR_ATTR[t["label"]]
+            if relation not in self.emit_relations:
+                continue
+
+            sc = scope_of[id(t)]
+            scope_text = text[bounds[sc][0]:bounds[sc][1]] if 0 <= sc < len(bounds) else ""
+            cands = [a for a in anchors if a["label"] == family and scope_of[id(a)] == sc]
+            if not cands:
+                continue
+
+            n_same_type = sum(
+                1 for x in attrs if x["label"] == t["label"] and scope_of[id(x)] == sc
+            )
+            if len(cands) >= 2 and n_same_type >= 2 and _COORD_CUE.search(scope_text):
+                continue  # positional coordination — LLM territory
+
+            before = [a for a in cands if a["char_end"] <= t["char_start"]]
+            after = [a for a in cands if a["char_start"] >= t["char_end"]]
+            nearest_before = max(before, key=lambda a: a["char_end"], default=None)
+            nearest_after = min(after, key=lambda a: a["char_start"], default=None)
+
+            head, method, score = self._choose(
+                prior, nearest_before, nearest_after, only=len(cands) == 1
+            )
+            if head is None:
+                continue
+
+            rels.append(ClinicalRelation(
+                relation=relation, head=head, tail=t, score=score,
+                extractor=self.version, method=method,
+                direction=_direction(head, t), token_gap=_token_gap(text, head, t),
+            ))
+        return rels
+
+    @staticmethod
+    def _choose(prior, nearest_before, nearest_after, *, only):
+        if only:
+            head = nearest_before or nearest_after
+            return head, "rule:only-anchor", 1.0
+        if prior == "follows":
+            if nearest_before is not None:
+                return nearest_before, "rule:follows-prior", 1.0
+            return nearest_after, "rule:follows-fallback", 0.7
+        if prior == "precedes":
+            if nearest_after is not None:
+                return nearest_after, "rule:precedes-prior", 1.0
+            return nearest_before, "rule:precedes-fallback", 0.7
+        # "either" — nearest overall
+        if nearest_before is None:
+            return nearest_after, "rule:either-prior", 1.0
+        if nearest_after is None:
+            return nearest_before, "rule:either-prior", 1.0
+        return (nearest_before, "rule:either-prior", 1.0)  # tie: prefer the left anchor
