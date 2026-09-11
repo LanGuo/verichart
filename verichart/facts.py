@@ -219,13 +219,18 @@ def make_fact(
     model_digest: str | None,
     created_at: str,
     assertion_status: AssertionStatus = "unknown",
+    supporting_spans: list[Span] | None = None,
 ) -> ClinicalFact:
     """Build one ClinicalFact with Phase-1 defaults for the fields later phases own.
 
-    Shared by ``to_facts`` (schema extraction) and
-    ``verichart.clinical.extract_entities`` (open-ended NER) so the record shape has
-    exactly one definition. ``concept_*`` and reconciliation fields are always the
+    Shared by ``to_facts`` (schema extraction),
+    ``verichart.clinical.extract_entities`` (open-ended NER), and
+    ``verichart.clinical.relations_to_facts`` (Phase 4 composites) so the record shape
+    has exactly one definition. ``concept_*`` and reconciliation fields are always the
     Phase-1 defaults here; Phase 3 / Phase 5 populate them downstream.
+
+    ``supporting_spans`` overrides the default (``[span]``, or ``[]`` when spanless) —
+    Phase 4 composites list the head span plus every attribute span.
     """
     return ClinicalFact(
         fact_id=compute_fact_id(
@@ -243,7 +248,10 @@ def make_fact(
         assertion_status=assertion_status,
         provenance_type=provenance_type,
         span=span,
-        supporting_spans=[span] if span else [],
+        supporting_spans=(
+            list(supporting_spans) if supporting_spans is not None
+            else ([span] if span else [])
+        ),
         extraction_model=model_tag,
         extraction_model_digest=model_digest,
         extraction_confidence=confidence,

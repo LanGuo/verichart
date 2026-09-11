@@ -13,8 +13,10 @@ from typing import Protocol, runtime_checkable
 
 from typing_extensions import TypedDict
 
+from veritract import Span
+
 from verichart.clinical.entities import EntityMention
-from verichart.facts import ClinicalFact
+from verichart.facts import ClinicalFact, _now_iso, make_fact
 
 # attribute label -> relation name
 _ATTRS = [
@@ -257,3 +259,165 @@ class RuleRelationLinker:
         if nearest_after is None:
             return nearest_before, "rule:either-prior", 1.0
         return (nearest_before, "rule:either-prior", 1.0)  # tie: prefer the left anchor
+
+
+# --------------------------------------------------------------------- relations_to_facts
+
+_WS = re.compile(r"\s+")
+
+
+def _ws(s: str) -> str:
+    return _WS.sub(" ", s).strip()
+
+
+def _span_from_mention(m: EntityMention, *, doc_id, source_type) -> Span:
+    return Span(
+        doc_id=doc_id, source_type=source_type,
+        char_start=m["char_start"], char_end=m["char_end"],
+        text=m["text"], provenance_type="direct",
+    )
+
+
+def _attr_of(relation: str) -> str:
+    return _ATTR_FOR_RELATION.get(relation, relation.removeprefix("HAS_"))
+
+
+def relations_to_facts(
+    text: str,
+    relations: list[ClinicalRelation],
+    entity_facts: list[ClinicalFact],
+    *,
+    manifest: dict | None = None,
+    created_at: str | None = None,
+    keep_unlinked_attributes: bool = False,
+) -> list[ClinicalFact]:
+    """Merge relations into ``entity_facts``: one composite ``ClinicalFact`` per anchor
+    with links, replacing the bare anchor fact and any linked-attribute facts. Anchors
+    with no links pass through unchanged.
+
+    Pure — returns a new list, does not mutate ``entity_facts``.
+    """
+    stamp = created_at if created_at is not None else _now_iso()
+    manifest_id = manifest["manifest_id"] if manifest else None
+
+    facts_by_span: dict[tuple[int, int], ClinicalFact] = {
+        (f["span"]["char_start"], f["span"]["char_end"]): f
+        for f in entity_facts if f["span"] is not None
+    }
+
+    groups: dict[tuple[int, int], list[ClinicalRelation]] = {}
+    for r in relations:
+        key = (r["head"]["char_start"], r["head"]["char_end"])
+        groups.setdefault(key, []).append(r)
+
+    consumed: set[tuple[int, int]] = set()
+    composites: list[ClinicalFact] = []
+
+    for head_key, rels in groups.items():
+        head = rels[0]["head"]
+        base = facts_by_span.get(head_key)
+        consumed.add(head_key)
+
+        doc_id = base["span"]["doc_id"] if base else None
+        source_type = base["span"]["source_type"] if base else "clinical_note"
+
+        order = _ASSEMBLY.get(head["label"], [])
+        rank = {rel: i for i, rel in enumerate(order)}
+        rels_sorted = sorted(
+            rels, key=lambda r: (rank.get(r["relation"], 99), r["tail"]["char_start"])
+        )
+        for r in rels_sorted:
+            consumed.add((r["tail"]["char_start"], r["tail"]["char_end"]))
+
+        tails = [r["tail"] for r in rels_sorted]
+        assembled = " ".join([head["text"], *[t["text"] for t in tails]])
+
+        spans = [head, *tails]
+        cover_start = min(s["char_start"] for s in spans)
+        cover_end = max(s["char_end"] for s in spans)
+        cover_text = text[cover_start:cover_end]
+        provenance = "direct" if _ws(cover_text) == _ws(assembled) else "inferred"
+
+        supporting = [_span_from_mention(m, doc_id=doc_id, source_type=source_type) for m in spans]
+        cover_span = Span(
+            doc_id=doc_id, source_type=source_type,
+            char_start=cover_start, char_end=cover_end,
+            text=cover_text, provenance_type=provenance,
+        )
+
+        confidence = min(
+            [head["score"], *[t["score"] for t in tails], *[r["score"] for r in rels_sorted]]
+        )
+        rel_note = ", ".join(f"{r['relation']}={r['tail']['text']!r}" for r in rels_sorted)
+        note = f"relations: {rel_note}; {rels_sorted[0]['extractor']}"
+
+        fact = make_fact(
+            label=head["label"],
+            value=assembled,
+            span=cover_span,
+            provenance_type=provenance,
+            confidence=confidence,
+            note=note,
+            patient_pseudonym=base["patient_pseudonym"] if base else None,
+            effective_date=base["effective_date"] if base else None,
+            manifest_id=(base["manifest_id"] if base else None) or manifest_id,
+            model_tag=rels_sorted[0]["extractor"],
+            model_digest=None,
+            created_at=stamp,
+            assertion_status=base["assertion_status"] if base else "unknown",
+            supporting_spans=supporting,
+        )
+        if base:  # carry a resolved concept through
+            for k in ("concept_code", "concept_system", "concept_display", "terminology_version"):
+                fact[k] = base[k]  # type: ignore[literal-required]
+            fact["fact_id"] = _refresh_fact_id(fact)
+        composites.append(fact)
+
+    _ATTR_LABELS = set(_ATTR_RULES)
+    survivors: list[ClinicalFact] = []
+    for f in entity_facts:
+        key = (f["span"]["char_start"], f["span"]["char_end"]) if f["span"] else None
+        if key in consumed:
+            continue
+        if (not keep_unlinked_attributes) and f["label"] in _ATTR_LABELS:
+            continue
+        survivors.append(f)
+
+    out = composites + survivors
+    out.sort(key=lambda f: f["span"]["char_start"] if f["span"] else 1 << 30)
+    return out
+
+
+def _refresh_fact_id(fact: ClinicalFact) -> str:
+    from verichart.facts import compute_fact_id
+
+    return compute_fact_id(
+        label=fact["label"], value=fact["value"],
+        concept_code=fact["concept_code"], concept_system=fact["concept_system"],
+        span=fact["span"], manifest_id=fact["manifest_id"],
+    )
+
+
+def extract_relations(
+    text: str,
+    *,
+    recognizer,
+    anchor_facts: list[ClinicalFact],
+    attribute_labels: list[str],
+    extractor: RelationExtractor,
+    manifest: dict | None = None,
+    created_at: str | None = None,
+    keep_unlinked_attributes: bool = False,
+) -> list[ClinicalFact]:
+    """Convenience: recognize attribute spans, link them to ``anchor_facts``, and merge
+    into composite facts. The pieces (``mentions_from_facts``, ``extractor.extract``,
+    ``relations_to_facts``) stay public for callers who want finer control.
+    """
+    attr_mentions = recognizer.recognize(text, attribute_labels)
+    head_mentions = mentions_from_facts(anchor_facts)
+    relations = extractor.extract(text, head_mentions + attr_mentions)
+    return relations_to_facts(
+        text, relations, anchor_facts,
+        manifest=manifest, created_at=created_at,
+        keep_unlinked_attributes=keep_unlinked_attributes,
+    )

@@ -206,3 +206,155 @@ def test_rule_linker_does_not_mutate_entities():
     snapshot = [dict(e) for e in ents]
     _linker().extract(text, ents)
     assert [dict(e) for e in ents] == snapshot
+
+
+# --- relations_to_facts ---
+
+TEXT = "Patient on metformin 500 mg twice daily; also has hypertension."
+
+
+def _med_facts(text=TEXT):
+    from verichart import extract_entities
+    from verichart.clinical.entities import MockRecognizer
+
+    rec = MockRecognizer(version="rec@1")
+    rec.register("metformin", label="MEDICATION", score=0.9)
+    rec.register("hypertension", label="PROBLEM", score=0.85)
+    return extract_entities(text, recognizer=rec, labels=["MEDICATION", "PROBLEM"],
+                            doc_id="n:1", patient_pseudonym="pt_1")
+
+
+def _rels(text=TEXT):
+    ents = _ents(text, [("metformin", "MEDICATION"), ("500 mg", "STRENGTH"),
+                        ("twice daily", "FREQUENCY")])
+    return _linker().extract(text, ents)
+
+
+def test_relations_to_facts_builds_one_composite_and_drops_bare_anchor():
+    from verichart.clinical.relations import relations_to_facts
+
+    facts = _med_facts()
+    out = relations_to_facts(TEXT, _rels(), facts)
+    meds = [f for f in out if f["label"] == "MEDICATION"]
+    assert len(meds) == 1
+    assert meds[0]["value"] == "metformin 500 mg twice daily"
+    assert not any(f["value"] == "metformin" for f in out)          # bare anchor gone
+    assert any(f["value"] == "hypertension" for f in out)           # unrelated fact passes through
+
+
+def test_composite_carries_supporting_spans_and_provenance():
+    from verichart.clinical.relations import relations_to_facts
+
+    (comp,) = [f for f in relations_to_facts(TEXT, _rels(), _med_facts())
+               if f["label"] == "MEDICATION"]
+    assert comp["provenance_type"] == "direct"          # covering text == assembled
+    assert len(comp["supporting_spans"]) == 3
+    for s in comp["supporting_spans"]:
+        assert TEXT[s["char_start"]:s["char_end"]] == s["text"]
+    assert comp["span"]["char_start"] == TEXT.index("metformin")
+    assert "HAS_STRENGTH" in comp["note"] and "HAS_FREQUENCY" in comp["note"]
+
+
+def test_composite_inherits_patient_and_assertion_and_concept():
+    from verichart import resolve_concepts
+    from verichart.clinical.relations import relations_to_facts
+    from verichart.clinical.terminology import MockResolver
+
+    facts = _med_facts()
+    rx = MockResolver(system="RxNorm", version="2024AB")
+    rx.register("metformin", code="6809", display="Metformin")
+    facts = resolve_concepts(facts, [rx])
+
+    (comp,) = [f for f in relations_to_facts(TEXT, _rels(), facts)
+               if f["label"] == "MEDICATION"]
+    assert comp["patient_pseudonym"] == "pt_1"
+    assert comp["assertion_status"] == facts[0]["assertion_status"]
+    assert comp["concept_code"] == "6809"
+    assert comp["concept_system"] == "RxNorm"
+
+
+def test_composite_provenance_inferred_when_scattered():
+    from verichart import extract_entities
+    from verichart.clinical.entities import MockRecognizer
+    from verichart.clinical.relations import relations_to_facts
+
+    text = "metformin therapy was initiated at 500 mg administered twice daily"
+    ents = _ents(text, [("metformin", "MEDICATION"), ("500 mg", "STRENGTH"),
+                        ("twice daily", "FREQUENCY")])
+    rels = _linker().extract(text, ents)
+    assert rels, "expected the linker to link within one sentence"
+
+    rec = MockRecognizer()
+    rec.register("metformin", label="MEDICATION", score=0.9)
+    facts = extract_entities(text, recognizer=rec, labels=["MEDICATION"], doc_id="n:2")
+
+    comp = next(f for f in relations_to_facts(text, rels, facts) if f["label"] == "MEDICATION")
+    assert comp["value"] == "metformin 500 mg twice daily"
+    assert comp["provenance_type"] == "inferred"    # covering text has interleaved words
+
+
+def test_composite_confidence_is_min_over_constituents():
+    from verichart.clinical.relations import relations_to_facts
+
+    (comp,) = [f for f in relations_to_facts(TEXT, _rels(), _med_facts())
+               if f["label"] == "MEDICATION"]
+    assert comp["extraction_confidence"] <= 0.9
+
+
+def test_anchor_with_no_relations_passes_through():
+    from verichart.clinical.relations import relations_to_facts
+
+    facts = _med_facts()
+    out = relations_to_facts(TEXT, [], facts)
+    assert {f["value"] for f in out} == {"metformin", "hypertension"}
+
+
+def test_fact_id_deterministic_and_differs_from_bare():
+    from verichart.clinical.relations import relations_to_facts
+
+    facts = _med_facts()
+    a = relations_to_facts(TEXT, _rels(), facts, created_at="2026-01-01T00:00:00+00:00")
+    b = relations_to_facts(TEXT, _rels(), facts, created_at="2026-09-01T00:00:00+00:00")
+    assert [f["fact_id"] for f in a] == [f["fact_id"] for f in b]
+    comp_id = next(f["fact_id"] for f in a if f["label"] == "MEDICATION")
+    bare_id = next(f["fact_id"] for f in facts if f["value"] == "metformin")
+    assert comp_id != bare_id
+
+
+def test_relations_to_facts_unmatched_head_uses_mention_fields():
+    from verichart.clinical.relations import relations_to_facts
+
+    out = relations_to_facts(TEXT, _rels(), [])   # no entity_facts at all
+    (comp,) = [f for f in out if f["label"] == "MEDICATION"]
+    assert comp["value"] == "metformin 500 mg twice daily"
+    assert comp["patient_pseudonym"] is None
+    assert comp["assertion_status"] == "unknown"
+
+
+def test_relations_to_facts_does_not_mutate_input():
+    from verichart.clinical.relations import relations_to_facts
+
+    facts = _med_facts()
+    snap = [dict(f) for f in facts]
+    relations_to_facts(TEXT, _rels(), facts)
+    assert [dict(f) for f in facts] == snap
+
+
+# --- extract_relations wrapper ---
+
+
+def test_extract_relations_end_to_end():
+    from verichart.clinical.attributes import AttributeRecognizer
+    from verichart.clinical.relations import RuleRelationLinker, extract_relations
+
+    anchors = _med_facts()
+    out = extract_relations(
+        TEXT,
+        recognizer=AttributeRecognizer(),
+        anchor_facts=anchors,
+        attribute_labels=["STRENGTH", "FREQUENCY", "ROUTE"],
+        extractor=RuleRelationLinker(),
+    )
+    (comp,) = [f for f in out if f["label"] == "MEDICATION"]
+    assert comp["value"] == "metformin 500 mg twice daily"
+    assert any(f["value"] == "hypertension" for f in out)
