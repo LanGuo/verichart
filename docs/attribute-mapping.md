@@ -20,12 +20,12 @@ mutates are deliberately **not** in it.
 | | `concept_system` | Phase 3 — `"SNOMED-CT"` / `"RxNorm"` / `"LOINC"` / `"ICD-10-CM"` / `"UMLS"` | **yes** |
 | | `concept_display` | Phase 3 — the resolver's canonical/preferred term | no |
 | | `value` | `GroundedField["value"]` / `QuarantinedField["value"]` | **yes** |
-| | `value_normalized` | Phase 4 / 6 (unit + format normalization) — `None` in Phase 1 | no |
+| | `value_normalized` | Phase 6 (unit + format normalization, e.g. "twice daily" → "BID") — `None` before | no |
 | | `effective_date` | caller-supplied in Phase 1; Phase 6 extracts from text | no |
 | | `assertion_status` | `"unknown"` in Phase 1; Phase 2 sets it via `derive_assertion_status` from a `MedspacyContextClassifier` (ConText) — `confirmed` / `ruled_out` / `family_history` / `historical` / `hypothetical` / `uncertain` | no |
-| **Provenance** | `provenance_type` | `Span["provenance_type"]` when grounded; `"inferred"` when grounded without a locatable span; `"unverified"` when quarantined | no |
+| **Provenance** | `provenance_type` | `Span["provenance_type"]` when grounded; `"inferred"` when grounded without a locatable span **or** for a Phase 4 relation-assembled composite whose covering text ≠ the assembled statement; `"unverified"` when quarantined | no |
 | | `span` | `GroundedField["span"]` (a veritract `Span`) — `None` when unverified | **yes** (its `doc_id` + offsets) |
-| | `supporting_spans` | `[span]` in Phase 1; Phase 5 dedup unions spans from merged facts | no |
+| | `supporting_spans` | `[span]` for a plain fact; a Phase 4 composite carries the anchor span + every attribute span; Phase 5 dedup unions spans from merged facts | no |
 | | `extraction_model` | `manifest["model_tag"]` when a manifest is passed | no |
 | | `extraction_model_digest` | `manifest["model_digest"]` | no |
 | | `extraction_confidence` | `GroundedField["confidence"] / 100` (renormalized 0–1); `0.0` when quarantined | no |

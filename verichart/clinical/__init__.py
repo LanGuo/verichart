@@ -28,7 +28,23 @@ from verichart.clinical.entities import (
     extract_entities,
     normalize_label,
 )
+from verichart.clinical.attributes import AttributeRecognizer
+from verichart.clinical.entities import (
+    LAB_ATTRIBUTE_LABELS,
+    MEDICATION_ATTRIBUTE_LABELS,
+    PROBLEM_ATTRIBUTE_LABELS,
+)
 from verichart.clinical.ner import GlinerBiomedRecognizer, MedspacyRuleRecognizer
+from verichart.clinical.relations import (
+    ClinicalRelation,
+    LlmRelationExtractor,
+    MockRelationExtractor,
+    RelationExtractor,
+    RuleRelationLinker,
+    extract_relations,
+    mentions_from_facts,
+    relations_to_facts,
+)
 from verichart.clinical.terminology import (
     DEFAULT_ROUTING,
     ConceptMatch,
@@ -67,4 +83,17 @@ __all__ = [
     "SqliteLookupResolver",
     "ScispacyResolver",
     "load_vocab_sqlite",
+    # Phase 4 — relations
+    "extract_relations",
+    "relations_to_facts",
+    "mentions_from_facts",
+    "ClinicalRelation",
+    "RelationExtractor",
+    "AttributeRecognizer",
+    "RuleRelationLinker",
+    "LlmRelationExtractor",
+    "MockRelationExtractor",
+    "MEDICATION_ATTRIBUTE_LABELS",
+    "LAB_ATTRIBUTE_LABELS",
+    "PROBLEM_ATTRIBUTE_LABELS",
 ]
