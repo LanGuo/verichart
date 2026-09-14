@@ -214,3 +214,145 @@ def detect_conflicts(
             kind=_classify_group(members, numeric_tolerance),
         ))
     return out
+
+
+# --------------------------------------------------------------------- ResolutionPolicy
+
+_BUILTIN_METHODS = {"highest_confidence", "most_recent", "source_rank"}
+
+
+class ResolutionPolicy:
+    """Routes a ``ConflictSet`` to a resolution method, cheapest first:
+    ``route_to_review_when`` -> ``by_kind`` -> ``by_concept_system`` -> ``default``.
+
+    ``named_rules`` maps a method name to ``callable(conflict_set, members) -> fact_id | None``
+    — arbitrary domain logic, still deterministic and inspectable. ``llm_resolver`` (an
+    ``LlmResolver``) is asked when a route resolves to ``"llm_assisted"``. ``rule_version``
+    feeds ``rule_versions()`` for the pipeline manifest — bump it whenever the policy changes.
+    """
+
+    def __init__(
+        self,
+        *,
+        default: str = "highest_confidence",
+        by_kind: dict[str, str] | None = None,
+        by_concept_system: dict[str, str] | None = None,
+        source_rank: list[str] | None = None,
+        named_rules: dict[str, Callable[[ConflictSet, list], str | None]] | None = None,
+        llm_resolver: LlmResolver | None = None,
+        route_to_review_when: Callable[[ConflictSet], bool] | None = None,
+        numeric_tolerance: float = 0.0,
+        rule_version: str = "v1",
+    ):
+        self.default = default
+        self.by_kind = dict(by_kind) if by_kind else {}
+        self.by_concept_system = dict(by_concept_system) if by_concept_system else {}
+        self.source_rank = list(source_rank) if source_rank else []
+        self.named_rules = dict(named_rules) if named_rules else {}
+        self.llm_resolver = llm_resolver
+        self.route_to_review_when = route_to_review_when
+        self.numeric_tolerance = numeric_tolerance
+        self.rule_version = rule_version
+
+    def method_for(self, cs: ConflictSet) -> str:
+        if self.route_to_review_when is not None and self.route_to_review_when(cs):
+            return "human_review"
+        if cs["kind"] in self.by_kind:
+            return self.by_kind[cs["kind"]]
+        system = cs["concept_key"].split(":", 1)[0]
+        if system in self.by_concept_system:
+            return self.by_concept_system[system]
+        return self.default
+
+
+# --------------------------------------------------------------------- built-in pickers
+
+
+def _pick_highest_confidence(members: list["ClinicalFact"]) -> "ClinicalFact":
+    top = max(f["extraction_confidence"] for f in members)
+    tied = [f for f in members if f["extraction_confidence"] == top]
+    return min(tied, key=lambda f: f["fact_id"])
+
+
+def _pick_most_recent(members: list["ClinicalFact"]) -> "ClinicalFact":
+    def sort_key(f):
+        return f["effective_date"] or f["created_at"]
+
+    top = max(sort_key(f) for f in members)
+    tied = [f for f in members if sort_key(f) == top]
+    return min(tied, key=lambda f: f["fact_id"])
+
+
+def _pick_by_source_rank(members: list["ClinicalFact"], source_rank: list[str]) -> "ClinicalFact":
+    def rank(f):
+        source_type = f["span"]["source_type"] if f["span"] else None
+        try:
+            return source_rank.index(source_type)
+        except ValueError:
+            return len(source_rank)  # unranked source loses to any ranked one
+
+    best = min(rank(f) for f in members)
+    tied = [f for f in members if rank(f) == best]
+    return min(tied, key=lambda f: f["fact_id"])
+
+
+def resolve_conflict_set(
+    cs: ConflictSet,
+    members: list["ClinicalFact"],
+    policy: ResolutionPolicy,
+    *,
+    context: str | None = None,
+    created_at: str | None = None,
+) -> Resolution:
+    """Dispatch ``cs`` through ``policy`` and return the ``Resolution`` (does not mutate
+    ``members`` or apply the decision to any fact — ``reconcile()`` does that)."""
+    method = policy.method_for(cs)
+    stamp = created_at if created_at is not None else _now_iso()
+
+    if method == "human_review":
+        return Resolution(
+            conflict_set_id=cs["conflict_set_id"], winning_fact_id=None,
+            method="human_review", resolver_id=None, rule_version=policy.rule_version,
+            rationale="routed to human review", decided_at=stamp,
+        )
+
+    if method == "highest_confidence":
+        winner = _pick_highest_confidence(members)
+        rationale = f"highest extraction_confidence ({winner['extraction_confidence']:.2f})"
+        resolver_id = None
+    elif method == "most_recent":
+        winner = _pick_most_recent(members)
+        rationale = f"most recent date ({winner['effective_date'] or winner['created_at']})"
+        resolver_id = None
+    elif method == "source_rank":
+        winner = _pick_by_source_rank(members, policy.source_rank)
+        st = winner["span"]["source_type"] if winner["span"] else None
+        rationale = f"highest-ranked source ({st!r} in {policy.source_rank})"
+        resolver_id = None
+    elif method == "llm_assisted":
+        if policy.llm_resolver is None:
+            raise ValueError("method 'llm_assisted' requires policy.llm_resolver")
+        winning_fact_id, rationale = policy.llm_resolver.resolve(cs, members, context)
+        return Resolution(
+            conflict_set_id=cs["conflict_set_id"], winning_fact_id=winning_fact_id,
+            method="llm_assisted", resolver_id=policy.llm_resolver.version,
+            rule_version=policy.rule_version, rationale=rationale, decided_at=stamp,
+        )
+    elif method in policy.named_rules:
+        winning_fact_id = policy.named_rules[method](cs, members)
+        return Resolution(
+            conflict_set_id=cs["conflict_set_id"], winning_fact_id=winning_fact_id,
+            method="named_rule", resolver_id=method, rule_version=policy.rule_version,
+            rationale=f"named rule {method!r}", decided_at=stamp,
+        )
+    else:
+        raise ValueError(
+            f"unknown resolution method {method!r} — not a built-in "
+            f"({sorted(_BUILTIN_METHODS)}), not in policy.named_rules, not 'llm_assisted'/'human_review'"
+        )
+
+    return Resolution(
+        conflict_set_id=cs["conflict_set_id"], winning_fact_id=winner["fact_id"],
+        method=method, resolver_id=resolver_id, rule_version=policy.rule_version,
+        rationale=rationale, decided_at=stamp,
+    )
