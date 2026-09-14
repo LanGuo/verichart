@@ -29,10 +29,10 @@ mutates are deliberately **not** in it.
 | | `extraction_model` | `manifest["model_tag"]` when a manifest is passed | no |
 | | `extraction_model_digest` | `manifest["model_digest"]` | no |
 | | `extraction_confidence` | `GroundedField["confidence"] / 100` (renormalized 0–1); `0.0` when quarantined | no |
-| **Reconciliation** | `conflict_set_id` | Phase 5 — `None` in Phase 1 | no |
-| | `resolution_method` | Phase 5 — `"none"` in Phase 1 | no |
-| | `resolver_id` | Phase 5 — `None` in Phase 1 | no |
-| | `rule_version` | Phase 5 — `None` in Phase 1 | no |
+| **Reconciliation** | `conflict_set_id` | `reconcile()` — set on any fact that was in a group of ≥2 (`None` for a solo fact) | no |
+| | `resolution_method` | `reconcile()` — the winning method (`"highest_confidence"` / `"most_recent"` / `"source_rank"` / `"named_rule"` / `"llm_assisted"` / `"human_review"`); `"none"` for a solo fact | no |
+| | `resolver_id` | `reconcile()` — the named-rule name, the LLM resolver's model tag, or `None` for a built-in method | no |
+| | `rule_version` | `reconcile()` — `policy.rule_version`; feeds `rule_versions(policy)` into the manifest | no |
 | **Versioning** | `manifest_id` | `manifest["manifest_id"]` or `result.manifest_id` | **yes** |
 | | `terminology_version` | Phase 3 — the resolved code's release (`resolver.version`); `terminology_versions(resolvers)` feeds the manifest | no |
 | **(annotation)** | `note` | quarantine reason in Phase 1; free-form later | no |

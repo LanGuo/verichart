@@ -450,3 +450,65 @@ def reconcile(
         reconciled.append(new)  # type: ignore[arg-type]
 
     return reconciled, conflict_sets, resolutions
+
+
+# --------------------------------------------------------------------- VeritractLlmResolver
+
+
+class VeritractLlmResolver:
+    """A concrete ``LlmResolver`` built on veritract. Two-way choice only (raises for larger
+    conflict sets — route those with ``by_kind``/``route_to_review_when`` instead). Uses
+    ``mode="no-grounding"``: the answer is a judgment, not a verbatim extraction from the text.
+    """
+
+    def __init__(self, llm):
+        self.llm = llm
+        self.version = f"llm-resolver@{getattr(llm, 'model', 'unknown')}"
+        try:
+            self.digest = llm.model_digest()
+        except Exception:
+            self.digest = None
+
+    def resolve(
+        self, conflict_set: ConflictSet, members: list["ClinicalFact"], context: str | None
+    ) -> tuple[str | None, str]:
+        from veritract import extract_raw, ground
+
+        if len(members) != 2:
+            return None, f"VeritractLlmResolver only supports 2-way conflicts, got {len(members)}"
+        a, b = members
+
+        def _source(f):
+            return f["span"]["source_type"] if f["span"] else "unknown"
+
+        schema = {
+            "type": "object",
+            "properties": {"winner": {"type": "string"}, "rationale": {"type": "string"}},
+            "required": ["winner", "rationale"],
+        }
+        # veritract's extract_raw sanitizer quarantines values under 2 word characters (it
+        # treats them as GBNF noise) — a bare "a"/"b" would always be dropped, so use longer
+        # literal tokens for the two choices.
+        prompt = (
+            "Two clinical facts disagree about the same concept. Given the context (if any), "
+            "which value is more likely correct?\n\n"
+            f"option_a: {a['value']!r} — source: {_source(a)}\n"
+            f"option_b: {b['value']!r} — source: {_source(b)}\n\n"
+            'Return JSON: {"winner": "option_a" or "option_b", "rationale": "one sentence"}'
+        )
+        text = context or f"option_a: {a['value']}  option_b: {b['value']}"
+        raw = extract_raw(text, schema, self.llm, prompt=prompt)
+        result = ground(raw, self.llm, mode="no-grounding")
+
+        winner_field = result.extracted.get("winner")
+        if winner_field is None:
+            return None, "LLM did not return a usable answer"
+        choice = winner_field["value"].strip().lower()
+        rationale_field = result.extracted.get("rationale")
+        rationale = rationale_field["value"] if rationale_field else "no rationale given"
+
+        if "option_a" in choice or choice.endswith("_a") or choice == "a":
+            return a["fact_id"], rationale
+        if "option_b" in choice or choice.endswith("_b") or choice == "b":
+            return b["fact_id"], rationale
+        return None, f"LLM returned an unrecognized choice: {choice!r}"

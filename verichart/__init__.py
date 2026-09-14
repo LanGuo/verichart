@@ -14,6 +14,7 @@ from verichart.reconcile import (
     ConflictSet,
     Resolution,
     ResolutionPolicy,
+    VeritractLlmResolver,
     concept_key,
     reconcile,
     rule_versions,
@@ -32,6 +33,7 @@ __all__ = [
     "Resolution",
     "rule_versions",
     "concept_key",
+    "VeritractLlmResolver",
     "compute_fact_id",
     "make_fact",
 ]

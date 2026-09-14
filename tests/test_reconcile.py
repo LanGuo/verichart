@@ -414,3 +414,47 @@ def test_public_api():
         "conflict_set_id", "concept_key", "date_bucket", "member_fact_ids", "kind"
     }
     assert "winning_fact_id" in TopResolution.__annotations__
+
+
+# --- VeritractLlmResolver (mock LLM; real Ollama test in test_reconcile_llm.py) ---
+
+
+def test_veritract_llm_resolver_with_mock_llm():
+    from veritract import MockLLM
+
+    from verichart.reconcile import ResolutionPolicy, VeritractLlmResolver, reconcile
+
+    llm = MockLLM()
+    llm.register("disagree", {"winner": "option_b", "rationale": "pharmacy feed is more reliable"})
+    resolver = VeritractLlmResolver(llm)
+
+    facts = [_fact(fact_id="a", value="80 mg", concept_code="6809", concept_system="RxNorm"),
+             _fact(fact_id="b", value="40 mg", concept_code="6809", concept_system="RxNorm")]
+    policy = ResolutionPolicy(default="llm_assisted", llm_resolver=resolver)
+    reconciled, conflict_sets, resolutions = reconcile(facts, policy)
+
+    assert resolutions[0]["method"] == "llm_assisted"
+    assert resolutions[0]["winning_fact_id"] == "b"
+    assert resolutions[0]["resolver_id"] == resolver.version
+    assert resolutions[0]["rationale"] == "pharmacy feed is more reliable"
+    assert {f["fact_id"] for f in reconciled} == {"b"}
+
+
+def test_veritract_llm_resolver_requires_two_members():
+    from veritract import MockLLM
+
+    from verichart.reconcile import VeritractLlmResolver
+
+    resolver = VeritractLlmResolver(MockLLM())
+    winner, rationale = resolver.resolve(
+        _cs(), [_fact(fact_id="a"), _fact(fact_id="b"), _fact(fact_id="c")], None
+    )
+    assert winner is None and "2-way" in rationale
+
+
+def test_resolve_conflict_set_llm_assisted_requires_resolver():
+    from verichart.reconcile import ResolutionPolicy, resolve_conflict_set
+
+    policy = ResolutionPolicy(default="llm_assisted")
+    with pytest.raises(ValueError, match="llm_resolver"):
+        resolve_conflict_set(_cs(), [_fact(fact_id="a"), _fact(fact_id="b")], policy)
