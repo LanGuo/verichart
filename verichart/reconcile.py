@@ -108,3 +108,109 @@ def _conflict_set_id(concept_key_: str, bucket: str | None, fact_ids: list[str])
     return hashlib.sha256(
         json.dumps(key, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+# --------------------------------------------------------------------- group_facts
+
+GroupKey = tuple[str, "str | None"]
+
+
+def group_facts(
+    facts: list["ClinicalFact"], *, hierarchy: ConceptHierarchy | None = None
+) -> dict[GroupKey, list["ClinicalFact"]]:
+    """Group facts by ``(concept_key, date_bucket)``, exactly — except when ``hierarchy`` is
+    given: two same-``date_bucket`` groups whose concept codes are in the same system and one
+    ``is_descendant`` of the other are merged into the ancestor's group. A group of size 1 is
+    not a conflict; ``detect_conflicts`` ignores it.
+    """
+    groups: dict[GroupKey, list["ClinicalFact"]] = {}
+    for f in facts:
+        groups.setdefault((concept_key(f), date_bucket(f)), []).append(f)
+
+    if hierarchy is None:
+        return groups
+
+    keys = list(groups)
+    merged_away: set[GroupKey] = set()
+    for i, ka in enumerate(keys):
+        if ka in merged_away:
+            continue
+        a_fact = groups[ka][0]
+        if not a_fact["concept_code"]:
+            continue
+        for kb in keys[i + 1:]:
+            if kb in merged_away or ka[1] != kb[1]:  # same date_bucket required
+                continue
+            b_fact = groups[kb][0]
+            if not b_fact["concept_code"] or a_fact["concept_system"] != b_fact["concept_system"]:
+                continue
+            system = a_fact["concept_system"]
+            if hierarchy.is_descendant(b_fact["concept_code"], a_fact["concept_code"], system):
+                groups[ka].extend(groups[kb])
+                merged_away.add(kb)
+            elif hierarchy.is_descendant(a_fact["concept_code"], b_fact["concept_code"], system):
+                groups[kb].extend(groups[ka])
+                merged_away.add(ka)
+                break  # ka is now folded into kb; move to the next ka
+    for k in merged_away:
+        del groups[k]
+    return groups
+
+
+# --------------------------------------------------------------------- detect_conflicts
+
+_NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
+
+# assertion_status pairs that cannot both be true of the same concept for one patient
+_INCOMPATIBLE_ASSERTIONS = {
+    frozenset({"confirmed", "ruled_out"}),
+    frozenset({"confirmed", "family_history"}),
+    frozenset({"ruled_out", "family_history"}),
+}
+
+
+def _first_number(value: str) -> float | None:
+    m = _NUMBER.search(value)
+    return float(m.group()) if m else None
+
+
+def _classify_pair(a: "ClinicalFact", b: "ClinicalFact", numeric_tolerance: float) -> ConflictKind:
+    if frozenset({a["assertion_status"], b["assertion_status"]}) in _INCOMPATIBLE_ASSERTIONS:
+        return "assertion_disagreement"
+    na, nb = _first_number(a["value"]), _first_number(b["value"])
+    if na is not None and nb is not None:
+        return "duplicate" if abs(na - nb) <= numeric_tolerance else "value_disagreement"
+    if _norm(a["value"]) == _norm(b["value"]):
+        return "duplicate"
+    return "value_disagreement"
+
+
+_KIND_RANK = {"duplicate": 0, "value_disagreement": 1, "assertion_disagreement": 2}
+
+
+def _classify_group(members: list["ClinicalFact"], numeric_tolerance: float) -> ConflictKind:
+    worst: ConflictKind = "duplicate"
+    for i in range(len(members)):
+        for j in range(i + 1, len(members)):
+            kind = _classify_pair(members[i], members[j], numeric_tolerance)
+            if _KIND_RANK[kind] > _KIND_RANK[worst]:
+                worst = kind
+    return worst
+
+
+def detect_conflicts(
+    groups: dict[GroupKey, list["ClinicalFact"]], *, numeric_tolerance: float = 0.0
+) -> list[ConflictSet]:
+    """One ``ConflictSet`` per group of size >= 2, deterministic and reproducible."""
+    out: list[ConflictSet] = []
+    for (ck, bucket), members in groups.items():
+        if len(members) < 2:
+            continue
+        fact_ids = [m["fact_id"] for m in members]
+        out.append(ConflictSet(
+            conflict_set_id=_conflict_set_id(ck, bucket, fact_ids),
+            concept_key=ck, date_bucket=bucket,
+            member_fact_ids=fact_ids,
+            kind=_classify_group(members, numeric_tolerance),
+        ))
+    return out
