@@ -288,3 +288,113 @@ def test_resolve_unknown_method_raises():
     policy = ResolutionPolicy(default="made_up_method")
     with pytest.raises(ValueError, match="made_up_method"):
         resolve_conflict_set(_cs(), [_fact(fact_id="f1"), _fact(fact_id="f2")], policy)
+
+
+# --- reconcile() ---
+
+
+def test_reconcile_article_dose_disagreement():
+    from verichart.reconcile import ResolutionPolicy, reconcile
+
+    facts = [
+        _fact(fact_id="chart", value="80 mg", concept_code="6809", concept_system="RxNorm",
+             extraction_confidence=0.7),
+        _fact(fact_id="pharmacy", value="40 mg", concept_code="6809", concept_system="RxNorm",
+             extraction_confidence=0.95),
+    ]
+    reconciled, conflict_sets, resolutions = reconcile(facts, ResolutionPolicy())
+
+    assert len(conflict_sets) == 1 and conflict_sets[0]["kind"] == "value_disagreement"
+    assert len(resolutions) == 1
+    assert resolutions[0]["method"] == "highest_confidence"
+    assert resolutions[0]["rule_version"] == "v1"
+
+    survivors = {f["fact_id"] for f in reconciled}
+    assert survivors == {"pharmacy"}                       # higher confidence wins
+    winner = reconciled[0]
+    assert winner["conflict_set_id"] == conflict_sets[0]["conflict_set_id"]
+    assert winner["resolver_id"] is None
+    assert "chart" in conflict_sets[0]["member_fact_ids"]   # loser recoverable via the audit trail
+
+
+def test_reconcile_switching_policy_changes_winner():
+    from verichart.reconcile import ResolutionPolicy, reconcile
+
+    # same date bucket (both None) so they conflict; confidence and recency disagree
+    facts = [
+        _fact(fact_id="chart", value="80 mg", concept_code="6809", concept_system="RxNorm",
+             extraction_confidence=0.7, created_at="2026-09-01T00:00:00+00:00"),
+        _fact(fact_id="pharmacy", value="40 mg", concept_code="6809", concept_system="RxNorm",
+             extraction_confidence=0.95, created_at="2026-01-01T00:00:00+00:00"),
+    ]
+    by_confidence, _, _ = reconcile(facts, ResolutionPolicy(default="highest_confidence"))
+    assert {f["fact_id"] for f in by_confidence} == {"pharmacy"}
+
+    by_recency, _, _ = reconcile(facts, ResolutionPolicy(default="most_recent"))
+    assert {f["fact_id"] for f in by_recency} == {"chart"}   # most recent, not highest confidence
+
+
+def test_reconcile_duplicate_unions_supporting_spans():
+    from verichart.reconcile import ResolutionPolicy, reconcile
+
+    def _span(cs, ce):
+        return {"doc_id": "d1", "source_type": "text", "char_start": cs, "char_end": ce,
+               "text": "x", "provenance_type": "direct"}
+
+    a = _fact(fact_id="a", value="metformin", concept_code="6809", concept_system="RxNorm",
+             extraction_confidence=0.8)
+    a["supporting_spans"] = [_span(0, 9)]
+    b = _fact(fact_id="b", value="metformin", concept_code="6809", concept_system="RxNorm",
+             extraction_confidence=0.6)
+    b["supporting_spans"] = [_span(50, 59)]
+
+    reconciled, conflict_sets, _ = reconcile([a, b], ResolutionPolicy())
+    assert conflict_sets[0]["kind"] == "duplicate"
+    (winner,) = reconciled
+    assert winner["fact_id"] == "a"
+    assert len(winner["supporting_spans"]) == 2
+
+
+def test_reconcile_human_review_keeps_every_member():
+    from verichart.reconcile import ResolutionPolicy, reconcile
+
+    facts = [_fact(fact_id="a", value="80 mg", concept_code="6809", concept_system="RxNorm"),
+             _fact(fact_id="b", value="40 mg", concept_code="6809", concept_system="RxNorm")]
+    reconciled, conflict_sets, resolutions = reconcile(
+        facts, ResolutionPolicy(route_to_review_when=lambda cs: True)
+    )
+    assert {f["fact_id"] for f in reconciled} == {"a", "b"}
+    assert all(f["resolution_method"] == "human_review" for f in reconciled)
+    assert resolutions[0]["winning_fact_id"] is None
+
+
+def test_reconcile_solo_fact_passes_through_unchanged():
+    from verichart.reconcile import ResolutionPolicy, reconcile
+
+    solo = _fact(fact_id="only")
+    reconciled, conflict_sets, resolutions = reconcile([solo], ResolutionPolicy())
+    assert reconciled == [solo]
+    assert conflict_sets == [] and resolutions == []
+
+
+def test_reconcile_does_not_mutate_input():
+    from verichart.reconcile import ResolutionPolicy, reconcile
+
+    facts = [_fact(fact_id="a", value="80 mg", concept_code="6809", concept_system="RxNorm"),
+             _fact(fact_id="b", value="40 mg", concept_code="6809", concept_system="RxNorm")]
+    snapshot = [dict(f) for f in facts]
+    reconcile(facts, ResolutionPolicy())
+    assert [dict(f) for f in facts] == snapshot
+
+
+def test_rule_versions_feeds_manifest_and_changes_id():
+    from veritract import MockLLM, build_manifest
+
+    from verichart.reconcile import ResolutionPolicy, rule_versions
+
+    llm = MockLLM()
+    schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+    m1 = build_manifest(llm, schema, extra={"rule_versions": rule_versions(ResolutionPolicy(rule_version="v1"))})
+    m2 = build_manifest(llm, schema, extra={"rule_versions": rule_versions(ResolutionPolicy(rule_version="v2"))})
+    assert m1["manifest_id"] != m2["manifest_id"]
+    assert m1["rule_versions"] == {"reconciliation": "v1"}

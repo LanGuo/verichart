@@ -356,3 +356,97 @@ def resolve_conflict_set(
         method=method, resolver_id=resolver_id, rule_version=policy.rule_version,
         rationale=rationale, decided_at=stamp,
     )
+
+
+# --------------------------------------------------------------------- reconcile()
+
+
+def _shared_doc_text(members: list["ClinicalFact"], documents: dict[str, str] | None) -> str | None:
+    if not documents:
+        return None
+    doc_ids = {m["span"]["doc_id"] for m in members if m["span"] and m["span"]["doc_id"]}
+    texts = [documents[d] for d in doc_ids if d in documents]
+    if not texts:
+        return None
+    return texts[0] if len(texts) == 1 else "\n---\n".join(texts)
+
+
+def reconcile(
+    facts: list["ClinicalFact"],
+    policy: ResolutionPolicy | None = None,
+    *,
+    hierarchy: ConceptHierarchy | None = None,
+    documents: dict[str, str] | None = None,
+    created_at: str | None = None,
+) -> tuple[list["ClinicalFact"], list[ConflictSet], list[Resolution]]:
+    """Dedup, detect, and resolve conflicts across ``facts`` (one patient's worth, drawn from
+    any number of sources). Pure — returns new fact dicts, does not mutate ``facts``.
+
+    Returns ``(reconciled, conflict_sets, resolutions)``:
+
+    - ``reconciled`` — solo facts unchanged; a resolved conflict's losers dropped and its winner
+      stamped (spans unioned when ``kind == "duplicate"``); an unresolved (human-review)
+      conflict's members all kept, all stamped ``resolution_method="human_review"``.
+    - ``conflict_sets`` / ``resolutions`` — the full audit trail. A dropped loser's content is
+      still recoverable: its ``fact_id`` is in the matching ``ConflictSet.member_fact_ids`` and
+      it is unchanged in the original ``facts`` list this call was given.
+    """
+    policy = policy or ResolutionPolicy()
+    by_id = {f["fact_id"]: f for f in facts}
+    groups = group_facts(facts, hierarchy=hierarchy)
+    conflict_sets = detect_conflicts(groups, numeric_tolerance=policy.numeric_tolerance)
+
+    drop: set[str] = set()
+    updates: dict[str, dict] = {}
+    span_additions: dict[str, list] = {}
+    resolutions: list[Resolution] = []
+
+    for cs in conflict_sets:
+        members = [by_id[fid] for fid in cs["member_fact_ids"]]
+        context = _shared_doc_text(members, documents)
+        res = resolve_conflict_set(cs, members, policy, context=context, created_at=created_at)
+        resolutions.append(res)
+
+        if res["winning_fact_id"] is None:
+            for f in members:
+                updates[f["fact_id"]] = {
+                    "conflict_set_id": cs["conflict_set_id"],
+                    "resolution_method": "human_review",
+                    "resolver_id": None,
+                    "rule_version": policy.rule_version,
+                }
+            continue
+
+        winner_id = res["winning_fact_id"]
+        for f in members:
+            if f["fact_id"] != winner_id:
+                drop.add(f["fact_id"])
+        updates[winner_id] = {
+            "conflict_set_id": cs["conflict_set_id"],
+            "resolution_method": res["method"],
+            "resolver_id": res["resolver_id"],
+            "rule_version": policy.rule_version,
+        }
+        if cs["kind"] == "duplicate":
+            extra = [
+                s for f in members if f["fact_id"] != winner_id for s in f["supporting_spans"]
+            ]
+            span_additions[winner_id] = extra
+
+    reconciled: list["ClinicalFact"] = []
+    for f in facts:
+        fid = f["fact_id"]
+        if fid in drop:
+            continue
+        new = dict(f)
+        if fid in updates:
+            new.update(updates[fid])
+        if fid in span_additions:
+            merged = list(new["supporting_spans"])
+            for s in span_additions[fid]:
+                if s not in merged:
+                    merged.append(s)
+            new["supporting_spans"] = merged
+        reconciled.append(new)  # type: ignore[arg-type]
+
+    return reconciled, conflict_sets, resolutions
