@@ -10,6 +10,14 @@ from verichart.clinical.entities import extract_entities
 from verichart.clinical.relations import extract_relations, relations_to_facts
 from verichart.clinical.terminology import resolve_concepts
 from verichart.facts import ClinicalFact, compute_fact_id, make_fact, to_facts
+from verichart.reconcile import (
+    ConflictSet,
+    Resolution,
+    ResolutionPolicy,
+    concept_key,
+    reconcile,
+    rule_versions,
+)
 
 __all__ = [
     "ClinicalFact",
@@ -18,6 +26,12 @@ __all__ = [
     "resolve_concepts",
     "extract_relations",
     "relations_to_facts",
+    "reconcile",
+    "ResolutionPolicy",
+    "ConflictSet",
+    "Resolution",
+    "rule_versions",
+    "concept_key",
     "compute_fact_id",
     "make_fact",
 ]

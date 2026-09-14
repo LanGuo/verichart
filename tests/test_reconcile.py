@@ -398,3 +398,19 @@ def test_rule_versions_feeds_manifest_and_changes_id():
     m2 = build_manifest(llm, schema, extra={"rule_versions": rule_versions(ResolutionPolicy(rule_version="v2"))})
     assert m1["manifest_id"] != m2["manifest_id"]
     assert m1["rule_versions"] == {"reconciliation": "v1"}
+
+
+def test_public_api():
+    from verichart import ConflictSet as TopConflictSet
+    from verichart import Resolution as TopResolution
+    from verichart import ResolutionPolicy as TopPolicy
+    from verichart import concept_key as top_concept_key
+    from verichart import reconcile as top_reconcile
+    from verichart import rule_versions as top_rule_versions
+
+    assert callable(top_reconcile) and callable(top_concept_key) and callable(top_rule_versions)
+    assert isinstance(TopPolicy(), TopPolicy)
+    assert set(TopConflictSet.__annotations__) == {
+        "conflict_set_id", "concept_key", "date_bucket", "member_fact_ids", "kind"
+    }
+    assert "winning_fact_id" in TopResolution.__annotations__
