@@ -48,9 +48,8 @@ deliberately excludes the sixth — see [`../attribute-mapping.md`](../attribute
 
 The article groups 42 capabilities into six domains: multimodal ingestion, clinical extraction,
 privacy / de-identification, reasoning / reconciliation, audit / access control, and versioning
-/ reproducibility. verichart's roadmap
-([`../../../veritract/docs/superpowers/plans/2026-09-07-clinical-rwe-package-roadmap.md`](../../../veritract/docs/superpowers/plans/2026-09-07-clinical-rwe-package-roadmap.md))
-maps each capability to a phase, an existing OSS component, or an explicit out-of-scope note.
+/ reproducibility. [`../roadmap.md`](../roadmap.md) maps each phase to the capabilities it
+covers, an existing OSS component, or an explicit out-of-scope note.
 
 ### Regulatory driver
 
