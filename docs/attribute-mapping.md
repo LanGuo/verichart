@@ -68,12 +68,14 @@ The [roadmap][roadmap] Phase 1 sketch of `ClinicalFact` was refined during imple
   entities, no negation) + medspaCy ConText (classifies, doesn't find) compose better as two
   protocols.
 
-## Known issue for Phase 5
+## Resolved in Phase 5
 
-`fact_id` keys on `label`. A schema-extracted `"drug"` fact and a Phase 2 NER `"MEDICATION"`
-fact for the same drug at the same span will get **different** `fact_id`s. Phase 5 deduplication
-must therefore key on `concept_code` (available after Phase 3), not on `label`. Flagged in the
-Phase 1 plan's self-review; to be addressed in the Phase 5 plan.
+`fact_id` keys on `label`, so a schema-extracted `"drug"` fact and a Phase 2 NER `"MEDICATION"`
+fact for the same drug at the same span still get **different** `fact_id`s — that part is
+unchanged. Flagged in the Phase 1 plan's self-review as a problem for cross-document dedup;
+Phase 5's `concept_key()` fixes it at the reconciliation layer by grouping on `concept_code`
+(available after Phase 3) instead, with a `label:value` fallback for unresolved facts. See
+[`reconciliation.md`](reconciliation.md).
 
 [article]: https://www.talby.com/p/fact-level-provenance-in-healthcare
-[roadmap]: ../../veritract/docs/superpowers/plans/2026-09-07-clinical-rwe-package-roadmap.md
+[roadmap]: roadmap.md
