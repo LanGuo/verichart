@@ -48,6 +48,7 @@ Runnable, no external service or download unless noted:
 
 | File | Shows |
 |---|---|
+| [`examples/end_to_end_pipeline.py`](examples/end_to_end_pipeline.py) | all five phases together: two documents → entities → coding → relations → cross-document reconciliation, no download |
 | [`examples/facts_from_note.py`](examples/facts_from_note.py) | schema extraction → `ClinicalFact` (needs Ollama) |
 | [`examples/entities_from_note.py`](examples/entities_from_note.py) | open-ended NER + assertion (needs `[clinical]`, downloads GLiNER-BioMed) |
 | [`examples/resolve_note_concepts.py`](examples/resolve_note_concepts.py) | terminology coding, no download |
