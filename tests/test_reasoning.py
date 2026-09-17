@@ -566,3 +566,30 @@ def test_llm_inference_rule_output_resolves_through_phase3(tmp_path):
     resolver = SqliteLookupResolver(db_path, system="SNOMED-CT", version="2026-03")
     (resolved,) = resolve_concepts([derived], [resolver], routing={"PROBLEM": ("SNOMED-CT",)})
     assert resolved["concept_code"] == "44054006"
+
+
+def test_public_api():
+    from verichart import (
+        AbsenceRule,
+        ConceptTriggerRule,
+        DecayRule,
+        DEFAULT_DECAY_RULES,
+        LlmInferenceRule,
+        MedRtTriggerRule,
+        ReasoningRule,
+        apply_rules,
+        assign_effective_dates,
+        is_stale,
+        load_indication_relations,
+        reasoning_versions,
+    )
+
+    assert callable(apply_rules) and callable(reasoning_versions)
+    assert callable(assign_effective_dates) and callable(is_stale)
+    assert callable(load_indication_relations)
+    assert all(
+        isinstance(c, type)
+        for c in (ConceptTriggerRule, AbsenceRule, MedRtTriggerRule, LlmInferenceRule, DecayRule)
+    )
+    assert DEFAULT_DECAY_RULES == []
+    assert isinstance(ReasoningRule, type)  # a runtime_checkable Protocol

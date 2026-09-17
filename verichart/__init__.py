@@ -10,6 +10,20 @@ from verichart.clinical.entities import extract_entities
 from verichart.clinical.relations import extract_relations, relations_to_facts
 from verichart.clinical.terminology import resolve_concepts
 from verichart.facts import ClinicalFact, compute_fact_id, make_fact, to_facts
+from verichart.reasoning import (
+    AbsenceRule,
+    ConceptTriggerRule,
+    DecayRule,
+    DEFAULT_DECAY_RULES,
+    LlmInferenceRule,
+    MedRtTriggerRule,
+    ReasoningRule,
+    apply_rules,
+    assign_effective_dates,
+    is_stale,
+    load_indication_relations,
+    reasoning_versions,
+)
 from verichart.reconcile import (
     ConflictSet,
     Resolution,
@@ -34,6 +48,18 @@ __all__ = [
     "rule_versions",
     "concept_key",
     "VeritractLlmResolver",
+    "ReasoningRule",
+    "ConceptTriggerRule",
+    "AbsenceRule",
+    "MedRtTriggerRule",
+    "load_indication_relations",
+    "LlmInferenceRule",
+    "apply_rules",
+    "reasoning_versions",
+    "assign_effective_dates",
+    "DecayRule",
+    "DEFAULT_DECAY_RULES",
+    "is_stale",
     "compute_fact_id",
     "make_fact",
 ]
