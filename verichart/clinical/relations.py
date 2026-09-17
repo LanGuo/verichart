@@ -150,11 +150,12 @@ _SAFE_RELATIONS = frozenset(
     _RELATION_FOR_ATTR[a] for a, (_, _, safe) in _ATTR_RULES.items() if safe
 )
 
-# split on sentence/clause punctuation but not inside a decimal ("8.2") or a grouped
-# number ("1,000"); newlines always split.
+# split on sentence/clause punctuation unless it's sandwiched between two digits (a decimal
+# like "8.2" or a grouped number like "1,000") -- but a trailing date ("...on 2026-06-01.")
+# must still split even though a digit precedes the period. Newlines always split.
 _SCOPE_SPLIT = {
-    "sentence": re.compile(r"(?<!\d)[.;!?](?!\d)|\n"),
-    "clause": re.compile(r"(?<!\d)[.;!?,](?!\d)|\n"),
+    "sentence": re.compile(r"(?<!\d)[.;!?]|[.;!?](?!\d)|\n"),
+    "clause": re.compile(r"(?<!\d)[.;!?,]|[.;!?,](?!\d)|\n"),
 }
 _COORD_CUE = re.compile(r"\brespectively\b", re.IGNORECASE)
 

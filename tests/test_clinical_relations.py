@@ -166,6 +166,16 @@ def test_rule_linker_scope_is_sentence():
     assert _linker().extract(text, ents) == []
 
 
+def test_rule_linker_sentence_split_after_trailing_date():
+    # a period immediately after a date ("...2026-06-01.") must still end the sentence, even
+    # though a digit precedes it -- regression for the decimal-protection lookbehind
+    # over-protecting trailing numbers/dates at sentence end.
+    text = "Note dated 2026-06-01. Continue metformin 500 mg daily."
+    ents = _ents(text, [("metformin", "MEDICATION"), ("500 mg", "STRENGTH")])
+    (rel,) = _linker().extract(text, ents)
+    assert rel["head"]["text"] == "metformin"
+
+
 def test_rule_linker_family_compatibility():
     text = "metformin level was 8.2"
     ents = _ents(text, [("metformin", "MEDICATION"), ("8.2", "VALUE")])
