@@ -15,6 +15,7 @@ module (why ``dateparser``, why no decay defaults, why two inference-rule flavor
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -340,3 +341,61 @@ def assign_effective_dates(
         out.append(new)
 
     return out
+
+
+# --------------------------------------------------------------------- decay
+
+
+@dataclass(frozen=True)
+class DecayRule:
+    """How long a concept's value stays valid. ``source`` is required — a citation, even if
+    that citation is "internal clinical review, <date>" — never a bare number with no
+    provenance. No universal clinical staleness knowledge base exists (see
+    docs/research/temporal-reasoning-and-decay.md); this is a nudge toward at least writing
+    down where a window came from.
+
+    ``concept_key`` (most specific) is tried before ``label`` (fallback). At least one of the
+    two must be set.
+    """
+
+    max_age_days: float
+    source: str
+    concept_key: str | None = None
+    label: str | None = None
+
+    def __post_init__(self):
+        if not self.source:
+            raise ValueError("DecayRule.source is required — cite where this window comes from")
+        if not self.concept_key and not self.label:
+            raise ValueError("DecayRule needs concept_key and/or label to match a fact against")
+
+
+DEFAULT_DECAY_RULES: list[DecayRule] = []  # ships empty — see the module docstring
+
+
+def decay_window_days(fact: "ClinicalFact", table: list[DecayRule]) -> float | None:
+    from verichart.reconcile import concept_key as _concept_key
+
+    fkey = _concept_key(fact)
+    for rule in table:
+        if rule.concept_key and rule.concept_key == fkey:
+            return rule.max_age_days
+    for rule in table:
+        if rule.concept_key is None and rule.label == fact["label"]:
+            return rule.max_age_days
+    return None
+
+
+def is_stale(
+    fact: "ClinicalFact", as_of: str, *, table: list[DecayRule] | None = None
+) -> bool:
+    """No matching rule, or no ``effective_date`` -> ``False`` — never claim staleness a fact
+    can't support. ``table=None`` uses ``DEFAULT_DECAY_RULES`` (empty)."""
+    table = DEFAULT_DECAY_RULES if table is None else table
+    window = decay_window_days(fact, table)
+    if window is None or fact["effective_date"] is None:
+        return False
+    age_days = (
+        datetime.fromisoformat(as_of) - datetime.fromisoformat(fact["effective_date"])
+    ).days
+    return age_days > window

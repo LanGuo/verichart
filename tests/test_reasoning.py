@@ -304,3 +304,62 @@ def test_assign_effective_dates_does_not_mutate_input():
     snapshot = dict(fact)
     assign_effective_dates([fact], {"n1": text}, document_dates={"n1": "2026-06-01"})
     assert fact == snapshot
+
+
+# --- decay: DecayRule + is_stale ---
+
+
+def test_default_decay_rules_is_empty():
+    from verichart.reasoning import DEFAULT_DECAY_RULES
+
+    assert DEFAULT_DECAY_RULES == []
+
+
+def test_is_stale_with_no_table_is_always_false():
+    from verichart.reasoning import is_stale
+
+    old_fact = _fact(effective_date="2020-01-01", label="LAB")
+    assert is_stale(old_fact, "2026-09-17") is False
+
+
+def test_decay_rule_requires_source():
+    from verichart.reasoning import DecayRule
+
+    with pytest.raises(ValueError, match="source"):
+        DecayRule(max_age_days=90, source="", label="LAB")
+    with pytest.raises(TypeError):
+        DecayRule(max_age_days=90, label="LAB")  # source omitted entirely
+
+
+def test_decay_rule_requires_a_match_target():
+    from verichart.reasoning import DecayRule
+
+    with pytest.raises(ValueError, match="concept_key"):
+        DecayRule(max_age_days=90, source="internal review")
+
+
+def test_is_stale_concept_level_rule():
+    from verichart.reasoning import DecayRule, is_stale
+
+    fact = _fact(effective_date="2026-01-01", concept_code="4548-4", concept_system="LOINC")
+    table = [DecayRule(concept_key="LOINC:4548-4", max_age_days=90, source="internal review")]
+    assert is_stale(fact, "2026-06-01", table=table) is True     # ~150 days old
+    assert is_stale(fact, "2026-02-01", table=table) is False    # ~31 days old
+
+
+def test_is_stale_label_level_fallback():
+    from verichart.reasoning import DecayRule, is_stale
+
+    fact = _fact(effective_date="2026-01-01", label="VITAL")
+    table = [DecayRule(label="VITAL", max_age_days=1, source="internal review")]
+    assert is_stale(fact, "2026-01-05", table=table) is True
+
+
+def test_is_stale_no_matching_rule_or_no_date():
+    from verichart.reasoning import DecayRule, is_stale
+
+    table = [DecayRule(label="LAB", max_age_days=90, source="internal review")]
+    unmatched_label = _fact(effective_date="2020-01-01", label="PROBLEM")
+    no_date = _fact(effective_date=None, label="LAB")
+    assert is_stale(unmatched_label, "2026-09-17", table=table) is False
+    assert is_stale(no_date, "2026-09-17", table=table) is False
