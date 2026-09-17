@@ -14,7 +14,7 @@ linked below as they land.
 |---|---|---|---|
 | **M1 — Auditable clinical facts** | veritract 0.2 + verichart Phase 1 | Reproducible, manifest-stamped `ClinicalFact` records from any veritract extraction | ✅ done |
 | **M2 — Clinical Silver** | Phases 2, 3, 4 | Entities, assertion, terminology codes, relations — all grounded | ✅ done |
-| **M3 — Reasoning tier** | Phases 5, 6 | Multi-document reconciliation with versioned policies + inference rules — the differentiated layer | 🟡 Phase 5 done, Phase 6 not started |
+| **M3 — Reasoning tier** | Phases 5, 6 | Multi-document reconciliation with versioned policies + inference rules — the differentiated layer | ✅ done |
 | **M4 — Gold + persistence** | Phases 7, 8 | OMOP CDM / FHIR emission with raw-byte traceability; reference hash-chained fact store | ⬜ not started |
 | **M5 — Evidence** | Phase 9 | Published benchmarks against cloud clinical-NLP APIs | ⬜ not started |
 
@@ -28,10 +28,10 @@ linked below as they land.
 | **3 — Terminology resolution** | SNOMED CT / RxNorm / LOINC / ICD-10-CM / UMLS coding — `SqliteLookupResolver` (bring your own release) + `ScispacyResolver` | ✅ v0.3.0 | [terminology.md](terminology.md) |
 | **4 — Relation extraction** | Link a medication/lab/problem to its attributes into one composite fact; deterministic `RuleRelationLinker` (ordered-directional, MedEx lineage) + `LlmRelationExtractor` | ✅ v0.4.0 | [clinical-relations.md](clinical-relations.md), [research/clinical-relation-extraction.md](research/clinical-relation-extraction.md) |
 | **5 — Reconciliation** | Dedup, conflict detection, and layered policy resolution across documents/sources | ✅ v0.5.0 | [reconciliation.md](reconciliation.md) |
-| **6 — Temporal reasoning** | History-vs-current, inference rules with explicit confidence, decay, scoped absence-as-negative | ⬜ not started | — |
+| **6 — Temporal reasoning** | `assign_effective_dates` (dateparser-backed); inference rules with explicit confidence (`ConceptTriggerRule`, `MedRtTriggerRule` KB lookup, `LlmInferenceRule`); scoped absence-as-negative (`AbsenceRule`); decay (`is_stale`, zero default windows) | ✅ v0.6.0 | [reasoning.md](reasoning.md), [research/temporal-reasoning-and-decay.md](research/temporal-reasoning-and-decay.md) |
 | **7 — OMOP / FHIR emission** | Materialize reconciled facts to OMOP CDM v5.4 / FHIR R4 with native (not side-table) provenance | ⬜ not started | — |
 | **8 — `FactStore`** | Persistence + hash-chained audit log protocol, one reference implementation | ⬜ not started | — |
-| **9 — Benchmarks** | Reproduce the kind of head-to-head the source article cites, against OSS + veritract | ⬜ not started | — |
+| **9 — Benchmarks** | Reproduce the kind of head-to-head the source article cites, against OSS + veritract; also a grounded eval-battery mode (invented-fact / omission / dose-error / unsafe-disposition checks against generated clinical text, reusing Phase 5 reconciliation for span-level grounding) — see `docs/superpowers/comparables/2026-09-17-typesafe-jev-system-one.md` (untracked) | ⬜ not started | — |
 
 ## Scope boundary (kept out on purpose)
 
