@@ -544,3 +544,102 @@ class MedRtTriggerRule:
             span=None, manifest_id=fact["manifest_id"],
         )
         return fact
+
+
+# --------------------------------------------------------------------- LlmInferenceRule
+
+
+class LlmInferenceRule:
+    """Contextual inference via a pinned LLM: reasons over a patient's other facts to propose
+    an additional diagnosis, rather than matching one fixed trigger concept.
+
+    Proposes a diagnosis **name**, never a code — asking an LLM to produce a SNOMED/RxNorm
+    code directly is exactly the hallucination risk Phase 3 exists to avoid. Run the derived
+    fact through ``resolve_concepts`` afterward, same as any other unresolved fact.
+
+    **No published benchmark shows this is more or less accurate than ``MedRtTriggerRule`` for
+    this task** (see docs/research/temporal-reasoning-and-decay.md) — an explicit opt-in, not a
+    silently preferred default.
+    """
+
+    def __init__(self, llm, *, name: str = "llm_inference", confidence: float = 0.5):
+        self.llm = llm
+        self.name = name
+        self.confidence = confidence
+        self.version = f"llm-inference@{getattr(llm, 'model', 'unknown')}"
+        try:
+            self.digest = llm.model_digest()
+        except Exception:
+            self.digest = None
+
+    def apply(self, facts: list["ClinicalFact"]) -> list["ClinicalFact"]:
+        from veritract import extract_raw, ground
+
+        by_patient: dict[str | None, list["ClinicalFact"]] = {}
+        for f in facts:
+            by_patient.setdefault(f["patient_pseudonym"], []).append(f)
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "implied_diagnosis": {"type": "string"},
+                "rationale": {"type": "string"},
+            },
+            "required": ["implied_diagnosis", "rationale"],
+        }
+        derived: list["ClinicalFact"] = []
+
+        for patient, patient_facts in by_patient.items():
+            fact_list = "\n".join(
+                f"- {f['label']}: {f['value']}"
+                + (f" ({f['concept_system']}:{f['concept_code']})" if f["concept_code"] else "")
+                for f in patient_facts
+            )
+            prompt = (
+                "Given this patient's known clinical facts, propose ONE additional diagnosis "
+                "that is strongly implied but not already stated (e.g. a medication that "
+                "specifically indicates a particular condition). If nothing is clearly implied, "
+                "return empty strings for both fields.\n\n"
+                f"Known facts:\n{fact_list}\n\n"
+                'Return JSON: {"implied_diagnosis": "<diagnosis name, or empty>", '
+                '"rationale": "<one sentence, or empty>"}'
+            )
+            raw = extract_raw(fact_list, schema, self.llm, prompt=prompt)
+            result = ground(raw, self.llm, mode="no-grounding")
+
+            gf = result.extracted.get("implied_diagnosis")
+            if gf is None or not gf["value"].strip():
+                continue
+            proposed = gf["value"].strip()
+            if any(
+                f["value"].strip().lower() == proposed.lower() for f in patient_facts + derived
+            ):
+                continue  # already stated, by text -- no concept_code to check yet
+
+            rationale_field = result.extracted.get("rationale")
+            rationale = rationale_field["value"] if rationale_field else "no rationale given"
+            derived.append(self._build(patient, proposed, rationale))
+
+        return derived
+
+    def _build(self, patient_pseudonym, value: str, rationale: str) -> "ClinicalFact":
+        stamp = _now_iso()
+        note = (
+            f"proposed by {self.name} ({rationale}); LLM-derived, not benchmarked against a "
+            f"KB lookup (e.g. MedRtTriggerRule) for this task"
+        )
+        return make_fact(
+            label="PROBLEM",
+            value=value,
+            span=None,
+            provenance_type="inferred",
+            confidence=self.confidence,
+            note=note,
+            patient_pseudonym=patient_pseudonym,
+            effective_date=None,
+            manifest_id=None,
+            model_tag=self.version,
+            model_digest=self.digest,
+            created_at=stamp,
+            assertion_status="unknown",
+        )

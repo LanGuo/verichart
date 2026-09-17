@@ -460,3 +460,109 @@ def test_medrt_rule_does_not_mutate_input(indications_db):
     snapshot = dict(trigger)
     rule.apply([trigger])
     assert trigger == snapshot
+
+
+# --- LlmInferenceRule (mock LLM; real Ollama test in test_reasoning_llm.py) ---
+
+
+def test_llm_inference_rule_proposes_unresolved_diagnosis():
+    from veritract import MockLLM
+
+    from verichart.reasoning import LlmInferenceRule
+
+    llm = MockLLM()
+    llm.register("Known facts", {
+        "implied_diagnosis": "type 2 diabetes mellitus",
+        "rationale": "on metformin, a first-line T2DM medication",
+    })
+    rule = LlmInferenceRule(llm, confidence=0.5)
+
+    facts = [_fact(fact_id="med1", label="MEDICATION", value="metformin",
+                  concept_code="6809", concept_system="RxNorm", patient_pseudonym="pt_1")]
+    (derived,) = rule.apply(facts)
+    assert derived["concept_code"] is None       # unresolved -- caller runs resolve_concepts
+    assert derived["concept_system"] is None
+    assert derived["value"] == "type 2 diabetes mellitus"
+    assert derived["provenance_type"] == "inferred"
+    assert derived["extraction_confidence"] == 0.5
+    assert "not benchmarked" in derived["note"] or "unbenchmarked" in derived["note"]
+    assert "metformin" in derived["note"] or "on metformin" in derived["note"]
+
+
+def test_llm_inference_rule_no_diagnosis_implied():
+    from veritract import MockLLM
+
+    from verichart.reasoning import LlmInferenceRule
+
+    llm = MockLLM()
+    llm.register("Known facts", {"implied_diagnosis": "", "rationale": ""})
+    rule = LlmInferenceRule(llm)
+    facts = [_fact(fact_id="med1", label="MEDICATION", value="metformin",
+                  concept_code="6809", concept_system="RxNorm", patient_pseudonym="pt_1")]
+    assert rule.apply(facts) == []
+
+
+def test_llm_inference_rule_skips_already_stated_diagnosis():
+    from veritract import MockLLM
+
+    from verichart.reasoning import LlmInferenceRule
+
+    llm = MockLLM()
+    llm.register("Known facts", {
+        "implied_diagnosis": "type 2 diabetes mellitus", "rationale": "on metformin",
+    })
+    rule = LlmInferenceRule(llm)
+    facts = [
+        _fact(fact_id="med1", label="MEDICATION", value="metformin", concept_code="6809",
+             concept_system="RxNorm", patient_pseudonym="pt_1"),
+        _fact(fact_id="dx1", label="PROBLEM", value="Type 2 Diabetes Mellitus",
+             patient_pseudonym="pt_1"),
+    ]
+    assert rule.apply(facts) == []
+
+
+def test_llm_inference_rule_no_facts():
+    from veritract import MockLLM
+
+    from verichart.reasoning import LlmInferenceRule
+
+    assert LlmInferenceRule(MockLLM()).apply([]) == []
+
+
+def test_llm_inference_rule_does_not_mutate_input():
+    from veritract import MockLLM
+
+    from verichart.reasoning import LlmInferenceRule
+
+    llm = MockLLM()
+    llm.register("Known facts", {"implied_diagnosis": "type 2 diabetes mellitus", "rationale": "x"})
+    facts = [_fact(fact_id="med1", label="MEDICATION", value="metformin", concept_code="6809",
+                  concept_system="RxNorm", patient_pseudonym="pt_1")]
+    snapshot = [dict(f) for f in facts]
+    LlmInferenceRule(llm).apply(facts)
+    assert [dict(f) for f in facts] == snapshot
+
+
+def test_llm_inference_rule_output_resolves_through_phase3(tmp_path):
+    """The two-step pattern: LlmInferenceRule proposes a name, resolve_concepts finds the code
+    -- never asking the model for a code directly."""
+    from veritract import MockLLM
+
+    from verichart import resolve_concepts
+    from verichart.clinical.terminology import SqliteLookupResolver, load_vocab_sqlite
+    from verichart.reasoning import LlmInferenceRule
+
+    llm = MockLLM()
+    llm.register("Known facts", {
+        "implied_diagnosis": "type 2 diabetes mellitus", "rationale": "on metformin",
+    })
+    facts = [_fact(fact_id="med1", label="MEDICATION", value="metformin", concept_code="6809",
+                  concept_system="RxNorm", patient_pseudonym="pt_1")]
+    (derived,) = LlmInferenceRule(llm).apply(facts)
+    assert derived["concept_code"] is None
+
+    db_path = str(tmp_path / "snomed.db")
+    load_vocab_sqlite([("44054006", "type 2 diabetes mellitus", True)], db_path)
+    resolver = SqliteLookupResolver(db_path, system="SNOMED-CT", version="2026-03")
+    (resolved,) = resolve_concepts([derived], [resolver], routing={"PROBLEM": ("SNOMED-CT",)})
+    assert resolved["concept_code"] == "44054006"
