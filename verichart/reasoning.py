@@ -131,3 +131,80 @@ class ConceptTriggerRule:
             span=None, manifest_id=fact["manifest_id"],
         )
         return fact
+
+
+# --------------------------------------------------------------------- AbsenceRule
+
+
+class AbsenceRule:
+    """Absence-as-negative, scoped: infer a negative finding only from a document type that
+    would plausibly assert the concept if positive (e.g. a screening panel) — never from an
+    unrelated document that simply doesn't mention it.
+
+    Checks ``concept`` (the screening/test concept) **globally**, not just within the
+    triggering document: if the actual test result was recorded anywhere for this patient — even
+    in a document outside ``applies_to_source_types`` — the absence in *this* document must not
+    be used to infer a result; a real answer exists elsewhere.
+    """
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        version: str,
+        concept: tuple[str, str],            # (system, code) — the screening/test concept
+        applies_to_source_types: set[str],
+        infer: dict,                          # label, value, concept_system, concept_code
+        confidence: float,
+    ):
+        self.name = name
+        self.version = version
+        self.concept_system, self.concept_code = concept
+        self.applies_to_source_types = set(applies_to_source_types)
+        self.infer = infer
+        self.confidence = confidence
+
+    def apply(self, facts: list["ClinicalFact"]) -> list["ClinicalFact"]:
+        if _already_has_concept(facts, self.concept_system, self.concept_code):
+            return []  # the real result exists somewhere; never guess over it
+
+        by_doc: dict[str, list["ClinicalFact"]] = {}
+        for f in facts:
+            if f["span"]:
+                by_doc.setdefault(f["span"]["doc_id"], []).append(f)
+
+        derived: list["ClinicalFact"] = []
+        for doc_facts in by_doc.values():
+            source_types = {f["span"]["source_type"] for f in doc_facts}
+            if not (source_types & self.applies_to_source_types):
+                continue
+            derived.append(self._build(doc_facts[0]))
+        return derived
+
+    def _build(self, context_fact: "ClinicalFact") -> "ClinicalFact":
+        stamp = _now_iso()
+        fact = make_fact(
+            label=self.infer["label"],
+            value=self.infer["value"],
+            span=None,
+            provenance_type="inferred",
+            confidence=self.confidence,
+            note=(f"absence-as-negative: no {self.concept_system}:{self.concept_code} fact in "
+                 f"doc {context_fact['span']['doc_id']!r} ({context_fact['span']['source_type']})"),
+            patient_pseudonym=context_fact["patient_pseudonym"],
+            effective_date=context_fact["effective_date"],
+            manifest_id=context_fact["manifest_id"],
+            model_tag=self.version,
+            model_digest=None,
+            created_at=stamp,
+            assertion_status="unknown",
+        )
+        fact["concept_code"] = self.infer["concept_code"]
+        fact["concept_system"] = self.infer["concept_system"]
+        fact["concept_display"] = self.infer.get("concept_display")
+        fact["fact_id"] = compute_fact_id(
+            label=fact["label"], value=fact["value"],
+            concept_code=fact["concept_code"], concept_system=fact["concept_system"],
+            span=None, manifest_id=fact["manifest_id"],
+        )
+        return fact

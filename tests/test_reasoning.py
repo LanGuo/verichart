@@ -150,3 +150,71 @@ def test_reasoning_versions_feeds_manifest_and_changes_id():
     m2 = build_manifest(llm, schema, extra={"rule_versions": reasoning_versions([R("v2")])})
     assert m1["manifest_id"] != m2["manifest_id"]
     assert m1["rule_versions"] == {"reasoning:r": "v1"}
+
+
+# --- AbsenceRule ---
+
+
+def _span(doc_id, source_type):
+    return {"doc_id": doc_id, "source_type": source_type, "char_start": 0, "char_end": 1,
+           "text": "x", "provenance_type": "direct"}
+
+
+def _hiv_absence_rule(confidence=0.85):
+    from verichart.reasoning import AbsenceRule
+
+    return AbsenceRule(
+        name="hiv_panel_absence",
+        version="v1",
+        concept=("LOINC", "5221-7"),
+        applies_to_source_types={"hiv_screening_panel", "std_panel"},
+        infer=dict(label="PROBLEM", value="HIV negative (inferred — absent from screening panel)",
+                  concept_system="SNOMED-CT", concept_code="165816005"),
+        confidence=confidence,
+    )
+
+
+def test_absence_rule_fires_in_scope_document():
+    doc_facts = [_fact(fact_id="f1", label="LAB", value="glucose", concept_code="2345-7",
+                       concept_system="LOINC", span=_span("panel1", "hiv_screening_panel"),
+                       patient_pseudonym="pt_1")]
+    (derived,) = _hiv_absence_rule().apply(doc_facts)
+    assert derived["concept_code"] == "165816005"
+    assert derived["provenance_type"] == "inferred"
+    assert derived["patient_pseudonym"] == "pt_1"
+
+
+def test_absence_rule_does_not_fire_outside_scope():
+    doc_facts = [_fact(fact_id="f1", label="PROBLEM", value="chest pain",
+                       span=_span("cardio1", "cardiology_note"))]
+    assert _hiv_absence_rule().apply(doc_facts) == []
+
+
+def test_absence_rule_does_not_fire_when_concept_present():
+    doc_facts = [_fact(fact_id="f1", label="LAB", value="HIV Ab/Ag",
+                       concept_code="5221-7", concept_system="LOINC",
+                       span=_span("panel1", "hiv_screening_panel"))]
+    assert _hiv_absence_rule().apply(doc_facts) == []
+
+
+def test_absence_rule_scoped_and_unscoped_documents_together():
+    facts = [
+        _fact(fact_id="f1", label="LAB", value="glucose", concept_code="2345-7",
+             concept_system="LOINC", span=_span("panel1", "hiv_screening_panel")),
+        _fact(fact_id="f2", label="PROBLEM", value="chest pain",
+             span=_span("cardio1", "cardiology_note")),
+    ]
+    derived = _hiv_absence_rule().apply(facts)
+    assert len(derived) == 1
+
+
+def test_absence_rule_does_not_contradict_a_result_recorded_elsewhere():
+    # panel1 itself doesn't mention the HIV test, but the actual result was recorded in an
+    # unrelated consult note -- the absence in panel1 must not be used to infer "negative."
+    facts = [
+        _fact(fact_id="f1", label="LAB", value="glucose", concept_code="2345-7",
+             concept_system="LOINC", span=_span("panel1", "hiv_screening_panel")),
+        _fact(fact_id="f2", label="LAB", value="HIV Ab/Ag reactive", concept_code="5221-7",
+             concept_system="LOINC", span=_span("id_consult", "consult_note")),
+    ]
+    assert _hiv_absence_rule().apply(facts) == []
