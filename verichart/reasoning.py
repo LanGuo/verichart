@@ -14,6 +14,7 @@ module (why ``dateparser``, why no decay defaults, why two inference-rule flavor
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -208,3 +209,134 @@ class AbsenceRule:
             span=None, manifest_id=fact["manifest_id"],
         )
         return fact
+
+
+# --------------------------------------------------------------------- temporal normalization
+#
+# A regex only *finds* candidate phrases; ``dateparser`` (pure Python, actively maintained)
+# does the actual date arithmetic — no hand-rolled timedelta math. See
+# docs/research/temporal-reasoning-and-decay.md for why. This is a cue-phrase floor, not a
+# general temporal-relation system; no such system exists as an installable Python library.
+
+_ABSOLUTE_CUE = re.compile(
+    r"\b\d{4}-\d{2}-\d{2}\b"
+    r"|\b\d{1,2}/\d{1,2}/\d{2,4}\b"
+    r"|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}\b"
+    r"|\bin\s+\d{4}\b",
+    re.IGNORECASE,
+)
+_RELATIVE_CUE = re.compile(
+    r"\b\d+\s+(?:days?|weeks?|months?|years?)\s+ago\b"
+    r"|\blast\s+(?:week|month|year)\b"
+    r"|\byesterday\b|\btoday\b",
+    re.IGNORECASE,
+)
+_TEMPORAL_CUES = re.compile(
+    f"(?:{_ABSOLUTE_CUE.pattern})|(?:{_RELATIVE_CUE.pattern})", re.IGNORECASE
+)
+# Split on sentence punctuation unless it's sandwiched between two digits (a decimal like
+# "8.2"); a trailing date ("...on 2026-06-01.") must still split even though a digit precedes
+# the period. Newlines always split.
+_SENTENCE_SPLIT = re.compile(r"(?<!\d)[.;!?]|[.;!?](?!\d)|\n")
+
+
+def _is_relative_cue(cue_text: str) -> bool:
+    return _RELATIVE_CUE.fullmatch(cue_text.strip()) is not None
+
+
+def _sentence_bounds(text: str) -> list[tuple[int, int]]:
+    bounds = []
+    pos = 0
+    for piece in _SENTENCE_SPLIT.split(text):
+        bounds.append((pos, pos + len(piece)))
+        pos += len(piece) + 1
+    return bounds
+
+
+def _scope_of(pos: int, bounds: list[tuple[int, int]]) -> int:
+    for i, (s, e) in enumerate(bounds):
+        if s <= pos < e:
+            return i
+    return -1
+
+
+def _normalize_temporal(candidate: str, document_date: str | None) -> str | None:
+    import dateparser
+
+    settings = {"PREFER_DATES_FROM": "past"}
+    if document_date:
+        try:
+            settings["RELATIVE_BASE"] = datetime.fromisoformat(document_date)
+        except ValueError:
+            pass
+    dt = dateparser.parse(candidate, settings=settings)
+    return dt.date().isoformat() if dt else None
+
+
+def assign_effective_dates(
+    facts: list["ClinicalFact"],
+    documents: dict[str, str],
+    *,
+    document_dates: dict[str, str] | None = None,
+) -> list["ClinicalFact"]:
+    """Fill ``effective_date`` from relative/absolute temporal phrases near a fact's mention.
+
+    Never overwrites an existing ``effective_date``. A relative phrase ("3 weeks ago") needs an
+    anchor — ``document_dates[doc_id]``, or (if absent) the first absolute expression found
+    anywhere in that document's text — and is left unresolved, not guessed, when neither exists.
+    An absolute phrase resolves regardless of anchor. Pure — returns new fact dicts.
+    """
+    document_dates = dict(document_dates) if document_dates else {}
+    out: list["ClinicalFact"] = []
+
+    for f in facts:
+        if f["effective_date"] is not None or f["span"] is None:
+            out.append(dict(f))
+            continue
+
+        doc_id = f["span"]["doc_id"]
+        text = documents.get(doc_id)
+        if text is None:
+            out.append(dict(f))
+            continue
+
+        bounds = _sentence_bounds(text)
+        sc = _scope_of(f["span"]["char_start"], bounds)
+        if sc < 0:
+            out.append(dict(f))
+            continue
+        s_start, s_end = bounds[sc]
+
+        cues = [
+            (m.start(), m.end(), m.group())
+            for m in _TEMPORAL_CUES.finditer(text)
+            if s_start <= m.start() < s_end
+        ]
+        if not cues:
+            out.append(dict(f))
+            continue
+
+        mstart = f["span"]["char_start"]
+        cue_text = min(cues, key=lambda c: min(abs(c[0] - mstart), abs(c[1] - mstart)))[2]
+
+        if _is_relative_cue(cue_text):
+            anchor = document_dates.get(doc_id)
+            if anchor is None:
+                abs_match = _ABSOLUTE_CUE.search(text)
+                anchor = _normalize_temporal(abs_match.group(), None) if abs_match else None
+            if anchor is None:
+                out.append(dict(f))  # no anchor available -- leave unresolved, don't guess
+                continue
+            resolved = _normalize_temporal(cue_text, anchor)
+        else:
+            resolved = _normalize_temporal(cue_text, None)
+
+        new = dict(f)
+        if resolved:
+            new["effective_date"] = resolved
+            note_bits = [f["note"]] if f["note"] else []
+            note_bits.append(f"effective_date inferred from {cue_text!r} -> {resolved}")
+            new["note"] = "; ".join(note_bits)
+        out.append(new)
+
+    return out

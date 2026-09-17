@@ -218,3 +218,89 @@ def test_absence_rule_does_not_contradict_a_result_recorded_elsewhere():
              concept_system="LOINC", span=_span("id_consult", "consult_note")),
     ]
     assert _hiv_absence_rule().apply(facts) == []
+
+
+# --- assign_effective_dates ---
+
+
+def _mention_fact(fact_id, value, doc_id, char_start, char_end):
+    return _fact(
+        fact_id=fact_id, value=value,
+        span={"doc_id": doc_id, "source_type": "clinical_note", "char_start": char_start,
+             "char_end": char_end, "text": value, "provenance_type": "direct"},
+    )
+
+
+def test_assign_effective_dates_relative_weeks():
+    from verichart.reasoning import assign_effective_dates
+
+    text = "Metformin started 3 weeks ago."
+    fact = _mention_fact("f1", "metformin", "n1", text.index("Metformin"), len("Metformin"))
+    out = assign_effective_dates([fact], {"n1": text}, document_dates={"n1": "2026-06-01"})
+    assert out[0]["effective_date"] == "2026-05-11"
+    assert "3 weeks ago" in out[0]["note"]
+
+
+def test_assign_effective_dates_relative_last_year():
+    from verichart.reasoning import assign_effective_dates
+
+    text = "Diagnosed with hypertension last year."
+    fact = _mention_fact("f1", "hypertension", "n1", text.index("hypertension"), len("hypertension"))
+    out = assign_effective_dates([fact], {"n1": text}, document_dates={"n1": "2026-06-01"})
+    assert out[0]["effective_date"] == "2025-06-01"
+
+
+def test_assign_effective_dates_absolute_needs_no_document_date():
+    from verichart.reasoning import assign_effective_dates
+
+    text = "Labs drawn on 2026-01-15 showed elevated glucose."
+    fact = _mention_fact("f1", "glucose", "n1", text.index("glucose"), len("glucose"))
+    out = assign_effective_dates([fact], {"n1": text})
+    assert out[0]["effective_date"] == "2026-01-15"
+
+
+def test_assign_effective_dates_no_cue_in_sentence_stays_none():
+    from verichart.reasoning import assign_effective_dates
+
+    text = "Patient reports fatigue. No relevant dates here at all."
+    fact = _mention_fact("f1", "fatigue", "n1", text.index("fatigue"), len("fatigue"))
+    out = assign_effective_dates([fact], {"n1": text}, document_dates={"n1": "2026-06-01"})
+    assert out[0]["effective_date"] is None
+
+
+def test_assign_effective_dates_never_overwrites_existing():
+    from verichart.reasoning import assign_effective_dates
+
+    text = "Metformin started 3 weeks ago."
+    fact = _mention_fact("f1", "metformin", "n1", text.index("Metformin"), len("Metformin"))
+    fact["effective_date"] = "2020-01-01"
+    out = assign_effective_dates([fact], {"n1": text}, document_dates={"n1": "2026-06-01"})
+    assert out[0]["effective_date"] == "2020-01-01"
+
+
+def test_assign_effective_dates_relative_without_anchor_stays_unresolved():
+    from verichart.reasoning import assign_effective_dates
+
+    text = "Metformin started 3 weeks ago, no absolute date anywhere in this note."
+    fact = _mention_fact("f1", "metformin", "n1", text.index("Metformin"), len("Metformin"))
+    out = assign_effective_dates([fact], {"n1": text})   # no document_dates, no absolute cue
+    assert out[0]["effective_date"] is None
+
+
+def test_assign_effective_dates_falls_back_to_absolute_cue_in_document():
+    from verichart.reasoning import assign_effective_dates
+
+    text = "Note dated 2026-06-01. Metformin started 3 weeks ago."
+    fact = _mention_fact("f1", "metformin", "n1", text.index("Metformin"), len("Metformin"))
+    out = assign_effective_dates([fact], {"n1": text})   # no document_dates given
+    assert out[0]["effective_date"] == "2026-05-11"
+
+
+def test_assign_effective_dates_does_not_mutate_input():
+    from verichart.reasoning import assign_effective_dates
+
+    text = "Metformin started 3 weeks ago."
+    fact = _mention_fact("f1", "metformin", "n1", text.index("Metformin"), len("Metformin"))
+    snapshot = dict(fact)
+    assign_effective_dates([fact], {"n1": text}, document_dates={"n1": "2026-06-01"})
+    assert fact == snapshot
