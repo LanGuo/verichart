@@ -363,3 +363,100 @@ def test_is_stale_no_matching_rule_or_no_date():
     no_date = _fact(effective_date=None, label="LAB")
     assert is_stale(unmatched_label, "2026-09-17", table=table) is False
     assert is_stale(no_date, "2026-09-17", table=table) is False
+
+
+# --- MedRtTriggerRule + load_indication_relations ---
+
+
+@pytest.fixture
+def indications_db(tmp_path):
+    from verichart.reasoning import load_indication_relations
+
+    p = tmp_path / "indications.db"
+    rows = [
+        ("RxNorm", "6809", "may_treat", "SNOMED-CT", "44054006", "Diabetes mellitus type 2"),
+        # a deliberately ambiguous drug: two candidate indications
+        ("RxNorm", "6373", "may_treat", "SNOMED-CT", "38341003", "Hypertension"),
+        ("RxNorm", "6373", "may_treat", "SNOMED-CT", "84114007", "Heart failure"),
+    ]
+    n = load_indication_relations(rows, str(p))
+    return str(p), n
+
+
+def test_load_indication_relations_row_count(indications_db):
+    _, n = indications_db
+    assert n == 3
+
+
+def test_medrt_rule_single_indication(indications_db):
+    from verichart.reasoning import MedRtTriggerRule
+
+    db_path, _ = indications_db
+    rule = MedRtTriggerRule(db_path, version="2026.07.06", confidence=0.6)
+    trigger = _fact(fact_id="med1", label="MEDICATION", concept_code="6809",
+                    concept_system="RxNorm", patient_pseudonym="pt_1")
+    (derived,) = rule.apply([trigger])
+    assert derived["concept_code"] == "44054006"
+    assert derived["extraction_confidence"] == 0.6
+    assert derived["provenance_type"] == "inferred"
+
+
+def test_medrt_rule_ambiguous_indications_split_confidence(indications_db):
+    from verichart.reasoning import MedRtTriggerRule
+
+    db_path, _ = indications_db
+    rule = MedRtTriggerRule(db_path, version="2026.07.06", confidence=0.6)
+    trigger = _fact(fact_id="med2", label="MEDICATION", concept_code="6373",
+                    concept_system="RxNorm")
+    derived = rule.apply([trigger])
+    assert len(derived) == 2
+    assert {d["concept_code"] for d in derived} == {"38341003", "84114007"}
+    for d in derived:
+        assert d["extraction_confidence"] == 0.3
+        assert "ambiguous" in d["note"] and "2" in d["note"]
+
+
+def test_medrt_rule_no_double_inference(indications_db):
+    from verichart.reasoning import MedRtTriggerRule
+
+    db_path, _ = indications_db
+    rule = MedRtTriggerRule(db_path, version="2026.07.06")
+    trigger = _fact(fact_id="med1", label="MEDICATION", concept_code="6809",
+                    concept_system="RxNorm")
+    already = _fact(fact_id="dx1", label="PROBLEM", concept_code="44054006",
+                    concept_system="SNOMED-CT")
+    assert rule.apply([trigger, already]) == []
+
+
+def test_medrt_rule_skips_non_medication_or_unresolved(indications_db):
+    from verichart.reasoning import MedRtTriggerRule
+
+    db_path, _ = indications_db
+    rule = MedRtTriggerRule(db_path, version="2026.07.06")
+    not_med = _fact(fact_id="f1", label="PROBLEM", concept_code="6809", concept_system="RxNorm")
+    unresolved = _fact(fact_id="f2", label="MEDICATION", concept_code=None)
+    assert rule.apply([not_med]) == []
+    assert rule.apply([unresolved]) == []
+
+
+def test_medrt_rule_version_distinguishes_dbs(tmp_path):
+    from verichart.reasoning import MedRtTriggerRule, load_indication_relations
+
+    db_a = tmp_path / "a.db"
+    db_b = tmp_path / "b.db"
+    load_indication_relations([("RxNorm", "1", "may_treat", "SNOMED-CT", "2", "X")], str(db_a))
+    load_indication_relations([("RxNorm", "1", "may_treat", "SNOMED-CT", "3", "Y")], str(db_b))
+    a = MedRtTriggerRule(str(db_a), version="2026.07.06")
+    b = MedRtTriggerRule(str(db_b), version="2026.07.06")
+    assert a.version != b.version  # same release tag, different content -> distinguishable
+
+
+def test_medrt_rule_does_not_mutate_input(indications_db):
+    from verichart.reasoning import MedRtTriggerRule
+
+    db_path, _ = indications_db
+    rule = MedRtTriggerRule(db_path, version="2026.07.06")
+    trigger = _fact(fact_id="med1", concept_code="6809", concept_system="RxNorm")
+    snapshot = dict(trigger)
+    rule.apply([trigger])
+    assert trigger == snapshot

@@ -399,3 +399,148 @@ def is_stale(
         datetime.fromisoformat(as_of) - datetime.fromisoformat(fact["effective_date"])
     ).days
     return age_days > window
+
+
+# --------------------------------------------------------------------- MedRtTriggerRule
+
+_INDICATIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS relations (
+    drug_system TEXT NOT NULL,
+    drug_code TEXT NOT NULL,
+    relation TEXT NOT NULL,
+    disease_system TEXT NOT NULL,
+    disease_code TEXT NOT NULL,
+    disease_display TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_relations_drug ON relations (drug_system, drug_code, relation);
+"""
+
+
+def load_indication_relations(
+    rows, db_path: str, *, replace: bool = True,
+) -> int:
+    """Build a ``MedRtTriggerRule`` DB from ``(drug_system, drug_code, relation,
+    disease_system, disease_code, disease_display)`` rows. Returns the row count.
+
+    Source your own rows from a MED-RT/RxClass export — never a live network call inside
+    ``MedRtTriggerRule.apply()`` (consistent with Phase 3's terminology resolvers). Two paths,
+    neither needs a UMLS license for the pull itself (a UMLS account is only needed for bulk
+    file downloads, not API calls):
+
+    - RxClass API, per drug: ``GET https://rxnav.nlm.nih.gov/REST/rxclass/class/byRxcui``
+      ``?rxcui={rxcui}&relaSource=MEDRT&relas=may_treat`` (also ``may_prevent``).
+    - A bulk UMLS/MED-RT release (needs a free UMLS account for the download only).
+    """
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    try:
+        if replace:
+            conn.execute("DROP TABLE IF EXISTS relations")
+        conn.executescript(_INDICATIONS_SCHEMA)
+        n = 0
+        batch = []
+        for row in rows:
+            batch.append(tuple(str(x) for x in row))
+            if len(batch) >= 10_000:
+                conn.executemany(
+                    "INSERT INTO relations VALUES (?, ?, ?, ?, ?, ?)", batch
+                )
+                n += len(batch)
+                batch.clear()
+        if batch:
+            conn.executemany("INSERT INTO relations VALUES (?, ?, ?, ?, ?, ?)", batch)
+            n += len(batch)
+        conn.commit()
+        return n
+    finally:
+        conn.close()
+
+
+class MedRtTriggerRule:
+    """KB-backed inference over a locally cached MED-RT/RxClass ``may_treat``/``may_prevent``
+    export (built with ``load_indication_relations``) — deterministic, no live network call,
+    reproducible once the local DB is versioned.
+
+    **Never collapses ambiguity**: a drug with N candidate indications yields up to N derived
+    facts, confidence split evenly across them, each noting the alternatives — many drugs
+    (metformin: T2DM, PCOS, prediabetes) have more than one real indication, and picking one
+    silently would be a guess dressed up as a fact. No published benchmark shows this approach
+    is more or less accurate than ``LlmInferenceRule`` for this task; both ship.
+    """
+
+    def __init__(
+        self,
+        db_path: str,
+        *,
+        name: str = "medrt_indication_lookup",
+        version: str,
+        relations: tuple[str, ...] = ("may_treat",),
+        confidence: float = 0.6,
+    ):
+        import hashlib
+        import sqlite3
+
+        self.name = name
+        self.relations = tuple(relations)
+        self.confidence = confidence
+        self._conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, check_same_thread=False)
+
+        # .version pins the caller-supplied release tag AND the actual local content, so two
+        # DBs claiming the same release tag but holding different rows are distinguishable.
+        rows = self._conn.execute(
+            "SELECT * FROM relations ORDER BY drug_system, drug_code, relation, "
+            "disease_system, disease_code, disease_display"
+        ).fetchall()
+        content_hash = hashlib.sha256(repr(rows).encode()).hexdigest()[:12]
+        self.version = f"{version}@{content_hash}"
+
+    def apply(self, facts: list["ClinicalFact"]) -> list["ClinicalFact"]:
+        derived: list["ClinicalFact"] = []
+        for f in facts:
+            if f["label"] != "MEDICATION" or not f["concept_code"]:
+                continue
+            placeholders = ",".join("?" * len(self.relations))
+            rows = self._conn.execute(
+                f"SELECT relation, disease_system, disease_code, disease_display FROM relations "
+                f"WHERE drug_system = ? AND drug_code = ? AND relation IN ({placeholders})",
+                (f["concept_system"], f["concept_code"], *self.relations),
+            ).fetchall()
+            if not rows:
+                continue
+            n = len(rows)
+            for relation, dsys, dcode, ddisplay in rows:
+                if _already_has_concept(facts + derived, dsys, dcode):
+                    continue
+                derived.append(self._build(f, relation, dsys, dcode, ddisplay, n))
+        return derived
+
+    def _build(self, trigger, relation, dsys, dcode, ddisplay, n_candidates) -> "ClinicalFact":
+        stamp = _now_iso()
+        note = f"{relation} per MED-RT, from {trigger['fact_id']} ({trigger['value']!r})"
+        if n_candidates > 1:
+            note += f"; ambiguous — {n_candidates} candidate indications for this drug"
+        fact = make_fact(
+            label="PROBLEM",
+            value=f"{ddisplay} (inferred)",
+            span=None,
+            provenance_type="inferred",
+            confidence=self.confidence / n_candidates if n_candidates > 1 else self.confidence,
+            note=note,
+            patient_pseudonym=trigger["patient_pseudonym"],
+            effective_date=trigger["effective_date"],
+            manifest_id=trigger["manifest_id"],
+            model_tag=self.version,
+            model_digest=None,
+            created_at=stamp,
+            assertion_status="unknown",
+        )
+        fact["concept_code"] = dcode
+        fact["concept_system"] = dsys
+        fact["concept_display"] = ddisplay
+        fact["fact_id"] = compute_fact_id(
+            label=fact["label"], value=fact["value"],
+            concept_code=dcode, concept_system=dsys,
+            span=None, manifest_id=fact["manifest_id"],
+        )
+        return fact
